@@ -212,8 +212,16 @@ pub fn build(b: *std.Build) anyerror!void {
 
     const uart_or_usb = if (StdioUsb) "-DSTDIO_USB=1" else "-DSTDIO_UART=1";
     const cmake_pico_sdk_path = b.fmt("-DPICO_SDK_PATH={s}", .{pico_sdk_path});
+
+    const build_generator: []const u8 = std.process.getEnvVarOwned(b.allocator, "BUILD_GENERATOR") catch |err| {
+        std.log.err("no BUILD_GENERATOR env variable set: {}\n", .{err});
+        return;
+    };
+
     const cmake_argv = [_][]const u8{
         "cmake",
+        "-G",
+        build_generator,
         "-B",
         "./build",
         "-S .",

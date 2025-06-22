@@ -1,6 +1,3 @@
-// Copyright (c) 2025 Aditya Hegde. All Rights Reserved.
-// Possum: OS in zig for Raspberry Pi Pico
-
 pub const p = @cImport({
     @cInclude("pico.h");
     @cInclude("stdio.h");

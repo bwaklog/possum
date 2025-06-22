@@ -1,7 +1,7 @@
 all:
-	@echo "\tmake [GENERATOR=<generator>] [docker-run|docker-run-clean]"
+	@echo "\tmake [docker-run|docker-run-clean]"
 	@echo "\tmake [docker-build|clean]"
-	@echo "\tmake [GENERATOR=<generator>] build # build on bare metal"
+	@echo "\tmake build # build on bare metal"
 
 build:
 	@echo "Building the project"

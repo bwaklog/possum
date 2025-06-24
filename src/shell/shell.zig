@@ -10,6 +10,7 @@ const c = @cImport({
 //yes this is alil messy, but i clean it up later
 const MAX_COMMAND_LENGTH = 256;
 const MAX_ARGS = 16;
+const MAX_HISTORY = 20;
 
 const Command = struct {
     name: []const u8,
@@ -20,6 +21,8 @@ const Command = struct {
 const Shell = struct {
     buffer: [MAX_COMMAND_LENGTH]u8,
     buffer_pos: usize,
+    history: [MAX_HISTORY][MAX_COMMAND_LENGTH]u8,
+    history_count: usize,
 
     const Self = @This();
 
@@ -27,6 +30,8 @@ const Shell = struct {
         return Self{
             .buffer = [_]u8{0} ** MAX_COMMAND_LENGTH,
             .buffer_pos = 0,
+            .history = [_][MAX_COMMAND_LENGTH]u8{[_]u8{0} ** MAX_COMMAND_LENGTH} ** MAX_HISTORY,
+            .history_count = 0,
         };
     }
 
@@ -47,6 +52,7 @@ const Shell = struct {
         _ = self;
         _ = c.printf("> ");
     }
+    //TODO: Once we have a filesystem we need the current_path in the prompt as well
 
     fn handleChar(self: *Self, ch: u8) void {
         switch (ch) {
@@ -80,9 +86,23 @@ const Shell = struct {
 
     fn processCommand(self: *Self) void {
         if (self.buffer_pos == 0) return;
-
+        self.addToHistory();
         const command = self.parseCommand();
         self.executeCommand(command);
+    }
+
+    fn addToHistory(self: *Self) void {
+        if (self.buffer_pos == 0) {
+            return;
+        }
+        if (self.history_count == MAX_HISTORY) {
+            for (1..MAX_HISTORY) |i| {
+                self.history[i - 1] = self.history[i];
+            }
+            self.history_count -= 1;
+        }
+        @memcpy(&self.history[self.history_count], self.buffer[0..self.buffer_pos]);
+        self.history_count += 1;
     }
 
     fn parseCommand(self: *Self) Command {
@@ -141,6 +161,12 @@ const Shell = struct {
             self.cmdHelp(cmd);
         } else if (std.mem.eql(u8, cmd.name, "exit")) {
             self.cmdExit(cmd);
+        } else if (std.mem.eql(u8, cmd.name, "ls")) {
+            self.cmdLs(cmd);
+        } else if (std.mem.eql(u8, cmd.name, "clear")) {
+            self.cmdClear(cmd);
+        } else if (std.mem.eql(u8, cmd.name, "history")) {
+            self.cmdHistory(cmd);
         } else if (cmd.name.len > 0) {
             _ = c.printf("Command not found: %.*s\r\n", @as(c_int, @intCast(cmd.name.len)), cmd.name.ptr);
         }
@@ -183,6 +209,26 @@ const Shell = struct {
         _ = cmd;
 
         _ = c.printf("Exitting~\r\n");
+    }
+
+    fn cmdLs(self: *Self, cmd: Command) void {
+        _ = self;
+        _ = cmd;
+        _ = c.printf("ls: listing files (dummy function, file system not yet implemented)");
+        _ = c.printf("file1.txt    file2.txt     file3.txt");
+    }
+
+    fn cmdClear(self: *Self, cmd: Command) void {
+        _ = cmd;
+        _ = c.printf("\x1b[2J\x1b[H");
+        self.clearBuffer();
+    }
+
+    fn cmdHistory(self: *Self, cmd: Command) void {
+        _ = cmd;
+        for (0..self.history_count) |i| {
+            _ = c.printf("%zu: %s \r\n", i + 1, self.history[i][0..]);
+        }
     }
 };
 

@@ -15,35 +15,41 @@ export fn main() c_int {
     // set StdioUsb to false in buils.zig
     _ = p.stdio_init_all();
 
-    p.gpio_init(PICO_DEFAULT_LED_PIN);
-    p.gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
+    // p.gpio_init(PICO_DEFAULT_LED_PIN);
+    // p.gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
 
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.sleep_ms(2000);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, true);
+    // p.sleep_ms(50);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, false);
+    // p.sleep_ms(50);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, true);
+    // p.sleep_ms(50);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, false);
+    // p.sleep_ms(50);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, true);
+    // p.sleep_ms(50);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, false);
+    // p.sleep_ms(50);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, true);
+    // p.sleep_ms(50);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, false);
+    // p.sleep_ms(50);
+    // p.sleep_ms(2000);
+    // p.gpio_put(PICO_DEFAULT_LED_PIN, true);
     _ = p.printf("Hello world\n");
     var sd = SD.init(
         @ptrCast(@as(*anyopaque, @ptrFromInt(0x4003c000))),
-        22, // CS pin
-        24, // SCK pin
-        25, // MOSI pin
-        21, // MISO pin
+        17, // CS pin
+        18, // SCK pin
+        19, // MOSI pin
+        16, // MISO pin
         1000000,
+        //         @ptrCast(@as(*anyopaque, @ptrFromInt(0x40040000))),
+        // 22, // CS pin
+        // 24, // SCK pin
+        // 25, // MOSI pin
+        // 21, // MISO pin
+        // 1000000,
     ) catch |err| {
         _ = p.printf("SD init failed: %d\n", @intFromError(err));
         return -1;

@@ -74,7 +74,6 @@ pub const SD = struct {
 
     const Self = @This();
 
-    // Modify the init function to use slower speed initially:
     pub fn init(
         spi_inst: *c.spi_inst_t,
         cs_pin: u8,
@@ -96,7 +95,7 @@ pub const SD = struct {
 
         _ = c.spi_init(sd.spi_inst, 400000);
 
-        // c.gpio_set_function(sd.cs_pin, c.GPIO_FUNC_SPI);
+        c.gpio_set_function(sd.cs_pin, c.GPIO_FUNC_SPI);
         c.gpio_set_function(sd.sck_pin, c.GPIO_FUNC_SPI);
         c.gpio_set_function(sd.mosi_pin, c.GPIO_FUNC_SPI);
         c.gpio_set_function(sd.miso_pin, c.GPIO_FUNC_SPI);

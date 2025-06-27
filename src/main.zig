@@ -10,9 +10,6 @@ pub const p = @cImport({
 });
 const std = @import("std");
 
-const task = @import("executor/task.zig");
-const executor = @import("executor/executor.zig");
-
 fn walker_callback(timer: [*c]p.repeating_timer_t) callconv(.c) bool {
     const alarm_id = timer[0].alarm_id;
 

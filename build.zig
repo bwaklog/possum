@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const Board = .pico_w;
+const Board = .pico;
 const Platform = .rp2040;
 
 const StdioUsb = true;

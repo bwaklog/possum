@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const Board = .pico_w;
+const Board = .pico;
 const Platform = .rp2040;
 
-const StdioUsb = true;
+const StdioUsb = false;
 const PicoStdlibDefine = if (StdioUsb) "LIB_PICO_STDIO_USB" else "LIB_PICO_STDIO_UART";
 
 const PicoSDKPath: ?[]const u8 = null;

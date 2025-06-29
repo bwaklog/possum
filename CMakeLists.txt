@@ -17,7 +17,7 @@ if (STDIO_UART)
 endif()
 
 # Adjust libraries as needed
-target_link_libraries(mlem pico_stdlib pico_cyw43_arch_none ${CMAKE_SOURCE_DIR}/zig-out/mlem.o)
+target_link_libraries(mlem pico_stdlib hardware_gpio ${CMAKE_SOURCE_DIR}/zig-out/mlem.o)
 
 # Generate binary
 pico_add_extra_outputs(mlem)

@@ -12,18 +12,91 @@ pub const p = @cImport({
     @cInclude("hardware/sync.h");
 });
 
+// const generic_func  = *fn(*anyopaque) ?*anyopaque;
+const generic_func  = *const fn(ctx: *anyopaque) void;
 
+// assembly method definitions
+extern fn foo(a: u32, b: u32) u32; // DEBUG
+extern fn isr_svcall() void;
+extern fn __piccolo_task_init_stack(n: *u32) void;
+extern fn __piccolo_pre_switch(n: *u32) void;
+extern fn piccolo_yield() void;
 
-const std = @import("std");
+const Task = struct {
+    callback: generic_func,
+    data: ?*anyopaque,
 
-fn walker_callback(timer: [*c]p.repeating_timer_t) callconv(.c) bool {
-    const alarm_id = timer[0].alarm_id;
+    fn new(task_func: generic_func, data: *anyopaque) Task {
+        return Task {
+            .callback = task_func,
+            .data = data,
+        };
+    }
+};
 
-    const time  = p.time_us_64();
+const TOTAL_TASKS: usize = 10;
 
-    _ = p.printf("[DEBUG][TIMER %d] walker callback at %lld\r\n", alarm_id, time);
+const Sched = struct {
+    stacks: [10][256]u32,
+    tasks: [10]*u32,
 
-    return true;
+    task_count: usize,
+    current_task: usize,
+
+    const Self = @This();
+
+    pub fn new() Self {
+        const ret = Sched {
+            .stacks = .{.{0} ** 256} ** 10,
+            .tasks = undefined,
+            .task_count = 0,
+            .current_task = 0,
+        };
+
+        return ret;
+    }
+
+    pub fn create_task(self: *Self, task: Task, n: usize) void {
+
+        // we mimick the stack frame
+        // 256 - 17 -> how much we are pushing to the stack
+        const offset: usize = 239;
+        self.stacks[n][offset + 8] = 0xFFFFFFFD;
+        self.stacks[n][offset + 15] = @as(u32, @intFromPtr(task.callback));
+        self.stacks[n][offset + 16] = 0x01000000;
+        
+        self.tasks[n] = &self.stacks[n][offset];
+
+        self.task_count += 1;
+    }
+
+    pub fn next(self: *Self) *u32 {
+        self.current_task = @mod(self.current_task + 1, self.task_count);
+        return self.tasks[self.current_task];
+    }
+};
+
+var sched = Sched.new();
+
+fn sched_callback(alarm_num: c_uint) callconv(.c) void {
+    isr_svcall();
+
+    _ = p.printf("[DEBUG] sched_callback running %d\n", alarm_num);
+    // const timer = p.hardware_get_num
+    // const alarm_id = timer[0].alarm_id;
+    // const time  = p.time_us_64();
+    // _ = p.printf("[DEBUG][TIMER %d] walker callback at %lld\r\n", alarm_id, time);
+
+    // var sched = @as(*Sched, @ptrCast(@alignCast(user_data)));
+    const task_ptr = sched.next();
+    
+    const timeout = p.make_timeout_time_ms(2000);
+    _ = p.hardware_alarm_set_target(0, timeout);
+    __piccolo_pre_switch(task_ptr);
+
+    // return true;
+    // _ = p.printf("[DEBUG] timer couldnt find user data");
+    // return true;
 }
 
 fn systick_config(n: c_ulong) void {
@@ -40,70 +113,58 @@ fn systick_config(n: c_ulong) void {
     (p.systick_hw.*).csr = 0x03;
 }
 
-fn init_stack(stack: *c_uint) void {
-    asm volatile(
-        \\ mrs ip, xpsr
-        \\ push {r4, r5, r6, r7, lr}
-        \\ mov r1, r8
-        \\ mov r2, r9
-        \\ mov r3, r10
-        \\ mov r4, r11
-        \\ mov r5, r12
-        \\ push {r1, r2, r3, r4, r5}    
-        \\
-        \\ msr psp, r0
-        \\ movs r0, #2
-        \\ msr control, r0
-        \\ isb
-    );
-    _ = stack;
+// custom function
+const foo_data = struct {};
+fn foo_task(ctx: *anyopaque) void {
+    _ = ctx;
+    while (true) {
+        _ = p.printf("[FOO TASK]: hello!\r\n");
+        p.gpio_put(25, true);
+        p.sleep_ms(200);
+        p.gpio_put(25, false);
+        p.sleep_ms(200);
+    }
+}
+
+const bar_data = struct {};
+fn bar_task(ctx: *anyopaque) void {
+    _ = ctx;
+    while (true) {
+        _ = p.printf("[BAR TASK]: hello!\r\n");
+        p.sleep_ms(500);
+    }
 }
 
 export fn main() c_int {
     _ = p.stdio_init_all();
 
-    var dummy_stack: [32]c_uint = [_]c_uint{0} ** 32;
-
-    // var ptr_opr = @as(*c_uint, @ptrFromInt(@intFromPtr(dummy_stack))) + @as(*c_uint, @ptrFromInt(32));
-    init_stack(@as(*c_uint, @ptrFromInt(@intFromPtr(&dummy_stack[0]) + 32)));
-
-    var shrp2_base = (p.PPB_BASE + p.M0PLUS_SHPR2_OFFSET);
-    var shrp2_base_cast: [*c]volatile p.io_rw_32 = @volatileCast(@as([*c]p.io_rw_32, &shrp2_base));
-    p.hw_set_bits((&shrp2_base_cast).*, p.M0PLUS_SHPR2_BITS);
-
-    var shrp3_base = (p.PPB_BASE + p.M0PLUS_SHPR3_OFFSET);
-    var shrp3_base_cast: [*c]volatile p.io_rw_32 = @volatileCast(@as([*c]p.io_rw_32, &shrp3_base));
-    p.hw_set_bits((&shrp3_base_cast).*, p.M0PLUS_SHPR3_BITS);
-
     p.gpio_init(25);
     p.gpio_set_dir(25, true);
     p.sleep_ms(2000);
 
-    for (0..5) |_| {
+    for (0..10) |_| {
         p.gpio_put(25, true);
         p.sleep_ms(100);
         p.gpio_put(25, false);
         p.sleep_ms(100);
     }
 
-    var timer: p.repeating_timer_t = undefined;
-    const rep_timer = @as([*c]p.repeating_timer_t, &timer);
-    
-    _ = p.add_repeating_timer_ms(
-        2000, 
-        walker_callback, 
-        p.NULL, 
-        rep_timer
-    );
+    var foo_task_data = foo_data{};
+    var bar_task_data = bar_data{};
 
-    while (true) {
-        _ = p.printf("main loop\r\n");
-        for (0..10) |_| {
-            p.gpio_put(25, true);
-            p.sleep_ms(50);
-            p.gpio_put(25, false);
-            p.sleep_ms(50);
-        }
+    const task_foo = Task.new(foo_task, &foo_task_data);
+    const task_bar = Task.new(bar_task, &bar_task_data);
+
+    sched.create_task(task_foo, 0);
+    sched.create_task(task_bar, 1);
+
+    p.hardware_alarm_set_callback(0, sched_callback);
+    const timeout = p.make_timeout_time_ms(2000);
+    _ = p.hardware_alarm_set_target(0, timeout);
+
+    __piccolo_pre_switch(sched.next());
+
+    while(true) {
     }
 
     return 0;

@@ -203,6 +203,8 @@ pub fn build(b: *std.Build) anyerror!void {
     // options headers
     lib.addIncludePath(b.path("config/"));
 
+    lib.addAssemblyFile(b.path("src/switch.s"));
+
     const compiled = lib.getEmittedBin();
     const install_step = b.addInstallFile(compiled, "mlem.o");
     install_step.step.dependOn(&lib.step);

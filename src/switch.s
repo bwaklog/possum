@@ -1,6 +1,5 @@
- /*
- * Copyright (C) 2021-2022 Gary Sims
- * Copyright (C) 2022 Keith Standiford
+/*
+ * Copyright (C) 2021 Gary Sims
  * All rights reserved.
  * 
  * Portions copyright (C) 2017 Scott Nelson
@@ -13,12 +12,16 @@
 .thumb
 .syntax unified
 
+# .type foo, %function
+.global foo
+foo:
+    adds r0, r0, r1
+    bx lr
+
+
 .type isr_svcall, %function
 .global isr_svcall
-.type isr_systick, %function
-.global isr_systick
 isr_svcall:
-isr_systick:
 	mrs r0, psp
 
     /* Save r4, r5, r6, r7, and lr first
@@ -33,9 +36,9 @@ isr_systick:
     stmia r0!, {r4,r5, r6, r7}
     
     mov	r4, r8
-    mov	r5, r9
-    mov	r6, r10
-    mov	r7, r11
+	mov	r5, r9
+	mov	r6, r10
+	mov	r7, r11
     subs r0, #32
     stmia r0!, {r4,r5, r6, r7}
     subs r0, #16 /* fix r0 to point to end of stack frame, 36 bytes from original r0 */
@@ -65,29 +68,29 @@ isr_systick:
     mov r12, r5 /* r12 is ip */
     pop {r4, r5, r6, r7}       
 
-    msr psr_nzcvq, ip
+	msr xpsr_nzcvq, ip
 
     pop {pc}
 
 .global __piccolo_pre_switch
 __piccolo_pre_switch:
-    /* save kernel state */
-      /*
-    +------+
-    |  LR  |
-    |  R7  |
-    |  R6  |
-    |  R5  |
-    |  R4  |
-    |  R12 | NB: R12  (i.e IP) is included, unlike user state
-    |  R11 |
-    |  R10 |
-    |  R9  |
-    |  R8  | 
-    +------+
-    */
+	/* save kernel state */
+    /*
+	+------+
+	|  LR  |
+	|  R7  |
+	|  R6  |
+	|  R5  |
+	|  R4  |
+	|  R12 | NB: R12  (i.e IP) is included, unlike user state
+	|  R11 |
+	|  R10 |
+	|  R9  |
+	|  R8  | 
+	+------+
+	*/
 
-    mrs ip, psr
+	mrs ip, xpsr
     push {r4, r5, r6, r7, lr}
     mov r1, r8
     mov r2, r9
@@ -96,33 +99,33 @@ __piccolo_pre_switch:
     mov r5, r12
     push {r1, r2, r3, r4, r5}    
 
-    /* load user state */ 
-      /*
-    +------+
-    |  LR  |
-    |  R7  |
-    |  R6  |
-    |  R5  |
-    |  R4  |
-    |  R11 |
-    |  R10 |
-    |  R9  |
-    |  R8  | <- r0
-    +------+
-    */
+	/* load user state */ 
+    /*
+	+------+
+	|  LR  |
+	|  R7  |
+	|  R6  |
+	|  R5  |
+	|  R4  |
+	|  R11 |
+	|  R10 |
+	|  R9  |
+	|  R8  | <- r0
+	+------+
+	*/
 
     ldmia	r0!,{r4-r7}
-    mov	r8, r4
-    mov	r9, r5
-    mov	r10, r6
-    mov	r11, r7
-    ldmia	r0!,{r4-r7}
+	mov	r8, r4
+	mov	r9, r5
+	mov	r10, r6
+	mov	r11, r7
+	ldmia	r0!,{r4-r7}
     ldmia	r0!,{r1}
     mov lr, r1
-    msr psp, r0 /* r0 is usertask_stack_start from activate(usertask_stack_start); */
+	msr psp, r0 /* r0 is usertask_stack_start from activate(usertask_stack_start); */
 
-    /* jump to user task */
-    bx lr
+	/* jump to user task */
+	bx lr
 
 .global __piccolo_task_init_stack
 __piccolo_task_init_stack:
@@ -142,7 +145,7 @@ __piccolo_task_init_stack:
 	+------+
 	*/
 
-    mrs ip, psr
+	mrs ip, xpsr
     push {r4, r5, r6, r7, lr}
     mov r1, r8
     mov r2, r9
@@ -151,11 +154,11 @@ __piccolo_task_init_stack:
     mov r5, r12
     push {r1, r2, r3, r4, r5}    
 
-    /* switch to process stack */
-    msr psp, r0
-    movs r0, #2
-    msr control, r0
-    isb
+	/* switch to process stack */
+	msr psp, r0
+	movs r0, #2     /* Switch to process stack in Thread mode but PRIVLEDGED so SDK & USB are happy! */
+	msr control, r0
+	isb
 	/* intentionally continue down into piccolo_syscall */
 	/* same as bl piccolo_syscall, if the code wasn't below */
 
@@ -167,4 +170,3 @@ piccolo_syscall:
 	svc 0
 	nop
 	bx lr
- 

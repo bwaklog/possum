@@ -72,8 +72,8 @@ isr_svcall:
 
     pop {pc}
 
-.global __piccolo_pre_switch
-__piccolo_pre_switch:
+.global pre_switch
+pre_switch:
 	/* save kernel state */
     /*
 	+------+
@@ -127,8 +127,8 @@ __piccolo_pre_switch:
 	/* jump to user task */
 	bx lr
 
-.global __piccolo_task_init_stack
-__piccolo_task_init_stack:
+.global task_init_stack
+task_init_stack:
 	/* save kernel state */
     /*
 	+------+
@@ -162,10 +162,10 @@ __piccolo_task_init_stack:
 	/* intentionally continue down into piccolo_syscall */
 	/* same as bl piccolo_syscall, if the code wasn't below */
 
-.global piccolo_yield
-.global piccolo_syscall
-piccolo_yield:
-piccolo_syscall:
+.global yield
+.global syscall
+yield:
+syscall:
     nop
 	svc 0
 	nop

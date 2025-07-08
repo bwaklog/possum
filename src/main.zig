@@ -18,27 +18,73 @@ const generic_func  = *const fn(ctx: *anyopaque) void;
 // assembly method definitions
 extern fn foo(a: u32, b: u32) u32; // DEBUG
 extern fn isr_svcall() void;
-extern fn __piccolo_task_init_stack(n: *u32) void;
-extern fn __piccolo_pre_switch(n: *u32) void;
-extern fn piccolo_yield() void;
+extern fn task_init_stack(n: *u32) void;
+extern fn pre_switch(n: *u32) void;
+extern fn yield() void;
 
-const Task = struct {
-    callback: generic_func,
-    data: ?*anyopaque,
-
-    fn new(task_func: generic_func, data: *anyopaque) Task {
-        return Task {
-            .callback = task_func,
-            .data = data,
-        };
-    }
-};
+// const Task = struct {
+//     callback: generic_func,
+//     data: ?*anyopaque,
+//
+//     fn new(task_func: generic_func, data: *anyopaque) Task {
+//         return Task {
+//             .callback = task_func,
+//             .data = data,
+//         };
+//     }
+// };
 
 const TOTAL_TASKS: usize = 10;
+const PSTACK_SIZE: usize = 256;
+
+/// NOTE (from the arm docs)
+/// when the processor takes an exception (tail chained 
+/// or if its late arrival) it pushes the following onto
+/// the stack (going down memory addresses)
+///
+/// ```
+/// <previous>
+/// SP + 0x1c xPSR
+/// SP + 0x18 PC (R15) -> next instr of the interrupted 
+///                       program
+/// SP + 0x14 LR (R14)
+/// SP + 0x10 R12 <- intra procedure call
+/// SP + 0x0c R3
+/// SP + 0x08 R2
+/// SP + 0x04 R1
+/// SP + 0x00 R0 <- this is where SP will be at the intr.
+/// ```
+///
+/// hence the hardware already saves these parts for us,
+/// while servicing an interrupt, for a context switch 
+/// we would need to store the remaining R4-R11(FP) to 
+/// be pushed onto the stack
+///
+/// while the processor executes the except. handler
+/// it writes the EXC_RETURN address to LR, which 
+/// signifies which SP corresponds to the stack frame
+/// and the opr. mode of the processor
+///
+/// the EXC_RETURN value is used by the processor to            
+/// check if it has completed an exception. [31:4] bits        
+/// being 0xFFFFFFF, when loaded to PC, its not a regular
+/// branch opr, rather exception is complete
+///     
+///     0xFFFFFFF1 -> ret to handler, MSP used and state 
+///                   is retrieved from MSP
+///     0xFFFFFFF9 -> ret to thread, MSP used and state 
+///                   is retrieved from MSP
+///
+///   **0xFFFFFFFD -> ret to handler, PSP used and state 
+///                   is retrieved from PSP
+///
+/// from `src/switch.s` the pop {pc} attempts to load
+/// 0xFFFFFFFD into the pc
+///
 
 const Sched = struct {
-    stacks: [10][256]u32,
-    tasks: [10]*u32,
+    stacks: [TOTAL_TASKS][PSTACK_SIZE]u32,
+    tasks: [TOTAL_TASKS]*u32,
 
     task_count: usize,
     current_task: usize,
@@ -47,7 +93,7 @@ const Sched = struct {
 
     pub fn new() Self {
         const ret = Sched {
-            .stacks = .{.{0} ** 256} ** 10,
+            .stacks = .{.{0} ** PSTACK_SIZE} ** TOTAL_TASKS,
             .tasks = undefined,
             .task_count = 0,
             .current_task = 0,
@@ -56,13 +102,12 @@ const Sched = struct {
         return ret;
     }
 
-    pub fn create_task(self: *Self, task: Task, n: usize) void {
-
+    pub fn create_task(self: *Self, task: generic_func, n: usize) void {
         // we mimick the stack frame
         // 256 - 17 -> how much we are pushing to the stack
-        const offset: usize = 239;
+        const offset: usize = PSTACK_SIZE - 17;
         self.stacks[n][offset + 8] = 0xFFFFFFFD;
-        self.stacks[n][offset + 15] = @as(u32, @intFromPtr(task.callback));
+        self.stacks[n][offset + 15] = @as(u32, @intFromPtr(task));
         self.stacks[n][offset + 16] = 0x01000000;
         
         self.tasks[n] = &self.stacks[n][offset];
@@ -72,6 +117,7 @@ const Sched = struct {
 
     pub fn next(self: *Self) *u32 {
         self.current_task = @mod(self.current_task + 1, self.task_count);
+        _ = p.printf("selecting the current task %d\n", self.current_task);
         return self.tasks[self.current_task];
     }
 };
@@ -79,20 +125,19 @@ const Sched = struct {
 var sched = Sched.new();
 
 fn sched_callback(alarm_num: c_uint) callconv(.c) void {
-    isr_svcall();
+    // _ = p.printf("[DEBUG] inside sched_callback");
+    // isr_svcall();
 
     _ = p.printf("[DEBUG] sched_callback running %d\n", alarm_num);
-    // const timer = p.hardware_get_num
-    // const alarm_id = timer[0].alarm_id;
-    // const time  = p.time_us_64();
-    // _ = p.printf("[DEBUG][TIMER %d] walker callback at %lld\r\n", alarm_id, time);
+    const time  = p.time_us_64();
+    _ = p.printf("[DEBUG][TIMER %d] walker callback at %lld\r\n", alarm_num, time);
 
-    // var sched = @as(*Sched, @ptrCast(@alignCast(user_data)));
     const task_ptr = sched.next();
     
+    pre_switch(task_ptr);
+
     const timeout = p.make_timeout_time_ms(2000);
     _ = p.hardware_alarm_set_target(0, timeout);
-    __piccolo_pre_switch(task_ptr);
 
     // return true;
     // _ = p.printf("[DEBUG] timer couldnt find user data");
@@ -149,20 +194,24 @@ export fn main() c_int {
         p.sleep_ms(100);
     }
 
-    var foo_task_data = foo_data{};
-    var bar_task_data = bar_data{};
+    _ = p.printf("finished boot wait\n");
 
-    const task_foo = Task.new(foo_task, &foo_task_data);
-    const task_bar = Task.new(bar_task, &bar_task_data);
 
-    sched.create_task(task_foo, 0);
-    sched.create_task(task_bar, 1);
+    sched.create_task(foo_task, 0);
+    _ = p.printf("[DEBUG] added task_foo to sched\n");
+    sched.create_task(bar_task, 1);
+    _ = p.printf("[DEBUG] added task_bar to sched\n");
 
     p.hardware_alarm_set_callback(0, sched_callback);
     const timeout = p.make_timeout_time_ms(2000);
     _ = p.hardware_alarm_set_target(0, timeout);
+    _ = p.printf("[DEBUG] initialised hardware alarm for 2000ms\n");
 
-    __piccolo_pre_switch(sched.next());
+    var dummy_stack = [_]c_uint{0} ** 32;
+    task_init_stack(&dummy_stack[0]);
+
+    _ = p.printf("[DEBUG] starting pre_switch");
+    pre_switch(sched.tasks[0]);
 
     while(true) {
     }

@@ -19,6 +19,7 @@ endif()
 # Adjust libraries as needed
 target_link_libraries(mlem 
     pico_stdlib 
+    hardware_irq
     hardware_spi
     hardware_gpio
     hardware_watchdog

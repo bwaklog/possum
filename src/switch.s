@@ -70,6 +70,7 @@ isr_svcall:
 
 	msr xpsr_nzcvq, ip
 
+    # bx lr
     pop {pc}
 
 .global pre_switch
@@ -119,8 +120,8 @@ pre_switch:
 	mov	r9, r5
 	mov	r10, r6
 	mov	r11, r7
-	ldmia	r0!,{r4-r7}
-    ldmia	r0!,{r1}
+	ldmia r0!, {r4-r7}
+    ldmia r0!, {r1}
     mov lr, r1
 	msr psp, r0 /* r0 is usertask_stack_start from activate(usertask_stack_start); */
 

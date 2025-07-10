@@ -1,431 +1,269 @@
-pub const p = @cImport({
-    @cInclude("pico.h");
-    @cInclude("stdio.h");
-    @cInclude("pico/stdlib.h");
-    @cInclude("hardware/gpio.h");
-    @cInclude("hardware/spi.h");
-    @cInclude("hardware/irq.h");
-    @cInclude("hardware/timer.h");
-});
 const std = @import("std");
-const shell = @import("shell/shell.zig");
-const SD = @import("driver/sd.zig").SD;
+const c = @cImport({
+    @cInclude("pico/stdlib.h");
+    @cInclude("stdio.h");
+    @cInclude("hardware/structs/systick.h");
+    @cInclude("hardware/sync.h");
+    @cInclude("hardware/regs/m0plus.h");
+    @cInclude("stdlib.h");
+});
 
-const PICO_DEFAULT_LED_PIN = 25;
-const SD_BLOCK_SIZE = 512;
-const STACK_SIZE = 1024;
-const TIME_SLICE_MS = 10;
+extern fn __piccolo_task_init_stack(stack: *u32) void;
+extern fn __piccolo_pre_switch(stack: *u32) *u32;
+extern fn piccolo_yield() void;
 
-//context is basically all registers so we sae them
-const TaskContext = struct {
-    r0: u32 = 0,
-    r1: u32 = 0,
-    r2: u32 = 0,
-    r3: u32 = 0,
-    r4: u32 = 0,
-    r5: u32 = 0,
-    r6: u32 = 0,
-    r7: u32 = 0,
-    r8: u32 = 0,
-    r9: u32 = 0,
-    r10: u32 = 0,
-    r11: u32 = 0,
-    r12: u32 = 0,
-    sp: u32 = 0,
-    lr: u32 = 0,
-    pc: u32 = 0,
-    psr: u32 = 0,
+export fn __dsb() void {
+    asm volatile ("dsb");
+}
+
+export fn __isb() void {
+    asm volatile ("isb");
+}
+
+const PICCOLO_OS_STACK_SIZE: usize = 256;
+const PICCOLO_OS_TASK_LIMIT: usize = 3;
+const PICCOLO_OS_THREAD_PSP: u32 = 0xFFFFFFFD;
+const PICCOLO_OS_TIME_SLICE: u32 = 10000000;
+
+const piccolo_os_internals_t = struct {
+    task_stacks: [PICCOLO_OS_TASK_LIMIT][PICCOLO_OS_STACK_SIZE]u32,
+    the_tasks: [PICCOLO_OS_TASK_LIMIT]?*u32,
+    task_count: usize,
+    current_task: usize,
+    started: bool,
 };
 
-const TaskFunction = *const fn (ctx: *anyopaque) void;
+const piccolo_sleep_t = u32;
 
-const TaskState = enum {
-    Ready,
-    Running,
-    Blocked,
-    Finished,
+const task_function_t = *const fn (ptr: ?*anyopaque) void;
+
+const task_wrapper_t = struct {
+    function: task_function_t,
+    parameter: ?*anyopaque,
 };
 
-//metadata for tasks
-const Task = struct {
-    id: u32,
-    function: TaskFunction,
-    context_data: *anyopaque,
-    context: TaskContext,
-    stack: [STACK_SIZE]u8,
-    priority: u8,
-    state: TaskState,
-    time_slice: u32,
-    remaining_time: u32,
-    is_new: bool = true,
+var piccolo_ctx: piccolo_os_internals_t = .{
+    .task_stacks = std.mem.zeroes([PICCOLO_OS_TASK_LIMIT][PICCOLO_OS_STACK_SIZE]u32),
+    .the_tasks = [_]?*u32{null} ** PICCOLO_OS_TASK_LIMIT,
+    .task_count = 0,
+    .current_task = 0,
+    .started = false,
 };
 
-const MAX_TASKS = 8;
-var tasks: [MAX_TASKS]Task = undefined;
-var num_tasks: usize = 0;
-var current_task_idx: usize = 0;
-var scheduler_active: bool = false;
-var need_schedule: bool = false;
+export var preemption_count: u32 = 0;
+export var debug_sp: u32 = 0;
+export var debug_lr: u32 = 0;
+export var preemption_occurred: bool = false;
 
-//ready queue is just circular queue
-const TaskQueue = struct {
-    tasks: [MAX_TASKS]u32,
-    front: usize = 0,
-    rear: usize = 0,
-    count: usize = 0,
+fn piccolo_os_create_task(task_stack: [*]u32, pointer_to_task_function: *const fn () void) *u32 {
+    const stack_top = task_stack + PICCOLO_OS_STACK_SIZE - 17;
 
-    fn enqueue(self: *TaskQueue, task_id: u32) bool {
-        if (self.count >= MAX_TASKS) return false;
-        self.tasks[self.rear] = task_id;
-        self.rear = (self.rear + 1) % MAX_TASKS;
-        self.count += 1;
-        return true;
-    }
+    const bytes_to_clear = 17 * @sizeOf(u32);
+    const stack_bytes = @as([*]u8, @ptrCast(stack_top))[0..bytes_to_clear];
+    @memset(stack_bytes, 0);
 
-    fn dequeue(self: *TaskQueue) ?u32 {
-        if (self.count == 0) return null;
-        const task_id = self.tasks[self.front];
-        self.front = (self.front + 1) % MAX_TASKS;
-        self.count -= 1;
-        return task_id;
-    }
+    stack_top[8] = PICCOLO_OS_THREAD_PSP;
+    stack_top[15] = @intFromPtr(pointer_to_task_function);
+    stack_top[16] = 0x01000000;
 
-    fn isEmpty(self: *const TaskQueue) bool {
-        return self.count == 0;
-    }
-};
-
-//multiple qs for each priority
-// TODO :make this dynamic and not hardcoded to 4
-
-var ready_queues: [4]TaskQueue = [_]TaskQueue{TaskQueue{ .tasks = [_]u32{0} ** MAX_TASKS }} ** 4;
-
-//cpu context saved
-fn saveContext(ctx: *TaskContext) void {
-    asm volatile (
-        \\str r0, [%[ctx], #0]
-        \\str r1, [%[ctx], #4]
-        \\str r2, [%[ctx], #8]
-        \\str r3, [%[ctx], #12]
-        \\str r4, [%[ctx], #16]
-        \\str r5, [%[ctx], #20]
-        \\str r6, [%[ctx], #24]
-        \\str r7, [%[ctx], #28]
-        \\mov r0, r8
-        \\str r0, [%[ctx], #32]
-        \\mov r0, r9
-        \\str r0, [%[ctx], #36]
-        \\mov r0, r10
-        \\str r0, [%[ctx], #40]
-        \\mov r0, r11
-        \\str r0, [%[ctx], #44]
-        \\mov r0, r12
-        \\str r0, [%[ctx], #48]
-        \\mov r0, sp
-        \\str r0, [%[ctx], #52]
-        \\mov r0, lr
-        \\str r0, [%[ctx], #56]
-        \\mrs r0, xpsr
-        \\str r0, [%[ctx], #64]
-        :
-        : [ctx] "r" (ctx),
-        : "r0", "memory"
-    );
+    return @ptrCast(stack_top);
 }
 
-fn restoreContext(ctx: *const TaskContext) void {
-    asm volatile (
-        \\ldr r0, [%[ctx], #0]
-        \\ldr r1, [%[ctx], #4]
-        \\ldr r2, [%[ctx], #8]
-        \\ldr r3, [%[ctx], #12]
-        \\ldr r4, [%[ctx], #16]
-        \\ldr r5, [%[ctx], #20]
-        \\ldr r6, [%[ctx], #24]
-        \\ldr r7, [%[ctx], #28]
-        \\ldr r0, [%[ctx], #32]
-        \\mov r8, r0
-        \\ldr r0, [%[ctx], #36]
-        \\mov r9, r0
-        \\ldr r0, [%[ctx], #40]
-        \\mov r10, r0
-        \\ldr r0, [%[ctx], #44]
-        \\mov r11, r0
-        \\ldr r0, [%[ctx], #48]
-        \\mov r12, r0
-        \\ldr r0, [%[ctx], #52]
-        \\mov sp, r0
-        \\ldr r0, [%[ctx], #56]
-        \\mov lr, r0
-        \\ldr r0, [%[ctx], #64]
-        \\msr xpsr_nzcvq, r0
-        \\ldr r0, [%[ctx], #60]  // Load PC
-        \\bx r0                   // Jump to PC
-        :
-        : [ctx] "r" (ctx),
-        : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "lr", "memory"
-    );
+fn __piccolo_task_init() void {
+    var dummy: [32]u32 = undefined;
+    __piccolo_task_init_stack(&dummy[0]);
 }
 
-fn taskWrapper() callconv(.Naked) noreturn {
-    asm volatile (
-        \\mov r0, r0  
-        \\blx lr     
-        \\bl %[taskFinish] 
-        :
-        : [taskFinish] "i" (&taskFinish),
-        : "r0", "lr"
-    );
+fn piccolo_init() void {
+    piccolo_ctx.task_count = 0;
+    _ = c.stdio_init_all();
+    c.hw_set_bits(@as([*c]c.io_rw_32, @ptrFromInt(c.PPB_BASE + c.M0PLUS_SHPR2_OFFSET)), c.M0PLUS_SHPR2_BITS);
+    c.hw_set_bits(@as([*c]c.io_rw_32, @ptrFromInt(c.PPB_BASE + c.M0PLUS_ICSR_OFFSET)), c.M0PLUS_ICSR_PENDSTCLR_BITS);
+    c.hw_set_bits(@as([*c]c.io_rw_32, @ptrFromInt(c.PPB_BASE + c.M0PLUS_SHPR3_OFFSET)), c.M0PLUS_SHPR3_BITS);
 }
 
-fn initTask(task_id: u32, function: TaskFunction, context_data: *anyopaque, priority: u8, time_slice: u32) bool {
-    if (num_tasks >= MAX_TASKS) return false;
-
-    //manually point the pc to task function, which is an opaque ptr to any function/task
-    var task = &tasks[num_tasks];
-    task.id = task_id;
-    task.function = function;
-    task.context_data = context_data;
-    task.priority = priority;
-    task.state = TaskState.Ready;
-    task.time_slice = time_slice;
-    task.remaining_time = time_slice;
-    task.is_new = true;
-
-    // downward growing stack
-    const stack_top = @intFromPtr(&task.stack[STACK_SIZE - 1]);
-    task.context.sp = stack_top;
-
-    task.context.r0 = @intFromPtr(context_data);
-    task.context.pc = @intFromPtr(&taskWrapper);
-    task.context.lr = @intFromPtr(function);
-    task.context.psr = 0x01000000; // Thumb mode
-
-    num_tasks += 1;
-
-    const priority_level = @min(priority, 3);
-    _ = ready_queues[priority_level].enqueue(task_id);
-
-    return true;
-}
-
-fn schedule() void {
-    if (!scheduler_active) return;
-
-    need_schedule = false;
-
-    if (current_task_idx < num_tasks and tasks[current_task_idx].state == TaskState.Running) {
-        saveContext(&tasks[current_task_idx].context);
-        tasks[current_task_idx].state = TaskState.Ready;
-
-        const priority_level = @min(tasks[current_task_idx].priority, 3);
-        _ = ready_queues[priority_level].enqueue(tasks[current_task_idx].id);
+fn __piccolo_systick_config(n: u32) void {
+    if (preemption_occurred) {
+        _ = c.printf("PREEMPT #%lu - SP: 0x%08lx, LR: 0x%08lx, Task: %zu\n", preemption_count, debug_sp, debug_lr, piccolo_ctx.current_task);
+        preemption_occurred = false;
     }
 
-    var next_task_id: ?u32 = null;
+    c.systick_hw.*.csr = 0;
+    __dsb();
+    __isb();
 
-    for (0..4) |i| {
-        const priority = 3 - i;
-        if (!ready_queues[priority].isEmpty()) {
-            next_task_id = ready_queues[priority].dequeue();
-            break;
-        }
-    }
+    c.hw_set_bits(@as([*c]c.io_rw_32, @ptrFromInt(c.PPB_BASE + c.M0PLUS_ICSR_OFFSET)), c.M0PLUS_ICSR_PENDSTCLR_BITS);
 
-    if (next_task_id) |task_id| {
-        current_task_idx = task_id;
-        tasks[current_task_idx].state = TaskState.Running;
-        tasks[current_task_idx].remaining_time = tasks[current_task_idx].time_slice;
-
-        _ = p.printf("Switching to task %d (priority %d)\n", task_id, tasks[current_task_idx].priority);
-
-        if (tasks[current_task_idx].is_new) {
-            tasks[current_task_idx].is_new = false;
-            const task = &tasks[current_task_idx];
-
-            const stack_ptr = @intFromPtr(&task.stack[STACK_SIZE - 1]);
-            task.context.sp = stack_ptr;
-
-            task.function(task.context_data);
-
-            tasks[current_task_idx].state = TaskState.Finished;
-            _ = p.printf("Task %d finished\n", task_id);
-            need_schedule = true;
-        } else {
-            restoreContext(&tasks[current_task_idx].context);
-        }
-    } else {
-        _ = p.printf("no ready tasks, sleep.......................................................................................\n");
-        current_task_idx = MAX_TASKS;
-    }
+    c.systick_hw.*.rvr = (n) - 1;
+    c.systick_hw.*.cvr = 0;
+    c.systick_hw.*.csr = 0x03;
 }
 
-fn taskYield() void {
-    if (current_task_idx < num_tasks) {
-        need_schedule = true;
-    }
-}
+fn piccolo_start() void {
+    piccolo_ctx.current_task = 0;
+    piccolo_ctx.started = true;
 
-fn taskFinish() void {
-    if (current_task_idx < num_tasks) {
-        tasks[current_task_idx].state = TaskState.Finished;
-        _ = p.printf("Task %d finished\n", tasks[current_task_idx].id);
-        need_schedule = true;
-    }
-}
+    __piccolo_task_init();
 
-const CounterTaskData = struct {
-    start: u32,
-    end: u32,
-    current: u32,
-};
-//test programs
-fn counterTask(ctx: *anyopaque) void {
-    const data: *CounterTaskData = @ptrCast(@alignCast(ctx));
-
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    while (data.current <= data.end) {
-        _ = p.printf("Counter Task %d: %d\n", tasks[current_task_idx].id, data.current);
-        data.current += 1;
-        p.sleep_ms(300);
-    }
-}
-
-fn blinkTask(ctx: *anyopaque) void {
-    _ = ctx;
-
-    var count: u32 = 0;
-    while (count < 20) {
-        p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-        p.sleep_ms(200);
-        p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-        p.sleep_ms(200);
-
-        count += 1;
-        _ = p.printf("Blink count: %d\n", count);
-    }
-}
-
-const fooTaskData = struct {
-    num: u32,
-    str: [*:0]const u8,
-    time: u32,
-};
-fn foo(ctx: *anyopaque) void {
-    const data: *fooTaskData = @ptrCast(@alignCast(ctx));
-    _ = p.printf("Foo Task %d: %s, num: %d, time: %d\n", tasks[current_task_idx].id, data.str, data.num, data.time);
-
-    while (data.num > 0) : (data.num -= 1) {
-        p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-        _ = p.printf("%s\n", data.str);
-        p.sleep_ms(data.time);
-        p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-        _ = p.printf("%s\n", data.str);
-        p.sleep_ms(data.time);
-    }
-}
-
-export fn scheduler_interrupt(alarm_num: u32) callconv(.c) void {
-    _ = alarm_num;
-
-    if (scheduler_active and current_task_idx < num_tasks) {
-        if (tasks[current_task_idx].remaining_time > TIME_SLICE_MS) {
-            tasks[current_task_idx].remaining_time -= TIME_SLICE_MS;
-        } else {
-            need_schedule = true;
-        }
-    }
-    //next intr
-    const target_time = p.make_timeout_time_ms(TIME_SLICE_MS);
-    _ = p.hardware_alarm_set_target(0, target_time);
-}
-
-export fn main() c_int {
-    _ = p.stdio_init_all();
-
-    p.gpio_init(PICO_DEFAULT_LED_PIN);
-    p.gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
-
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-    p.sleep_ms(50);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, false);
-    p.sleep_ms(2000);
-    p.gpio_put(PICO_DEFAULT_LED_PIN, true);
-
-    _ = p.printf("*starting**\n");
-    //the callback is to scheduler intr not to the task that needs to be run
-    p.hardware_alarm_set_callback(0, scheduler_interrupt);
-
-    var counter_data1 = CounterTaskData{ .start = 1, .end = 10, .current = 1 };
-    var counter_data2 = CounterTaskData{ .start = 100, .end = 110, .current = 100 };
-    var counter_data4 = CounterTaskData{ .start = 50, .end = 60, .current = 50 };
-
-    var foo_data1 = fooTaskData{ .num = 5, .str = "ples", .time = 100 };
-    var foo_data2 = fooTaskData{ .num = 3, .str = "hello", .time = 200 };
-
-    _ = initTask(0, counterTask, &counter_data1, 2, 500);
-    _ = initTask(1, blinkTask, undefined, 1, 400);
-    _ = initTask(2, counterTask, &counter_data2, 1, 200);
-    _ = initTask(3, foo, &foo_data1, 1, 100);
-    _ = initTask(4, counterTask, &counter_data4, 4, 300);
-    _ = initTask(5, foo, &foo_data2, 3, 200);
-
-    scheduler_active = true;
-
-    const target_time = p.make_timeout_time_ms(TIME_SLICE_MS);
-    _ = p.hardware_alarm_set_target(0, target_time);
-
-    schedule();
+    _ = c.printf("Starting first task: %zu\n", piccolo_ctx.current_task);
 
     while (true) {
-        if (need_schedule) {
-            schedule();
-        } else {
-            var all_finished = true;
-            for (tasks[0..num_tasks]) |task| {
-                if (task.state == TaskState.Ready or task.state == TaskState.Running) {
-                    all_finished = false;
-                    break;
-                }
-            }
+        __piccolo_systick_config(PICCOLO_OS_TIME_SLICE);
+        piccolo_ctx.the_tasks[piccolo_ctx.current_task] =
+            __piccolo_pre_switch(piccolo_ctx.the_tasks[piccolo_ctx.current_task].?);
 
-            if (all_finished) {
-                _ = p.printf("all tasks done\n");
-                break;
-            }
+        piccolo_ctx.current_task += 1;
+        if (piccolo_ctx.current_task >= piccolo_ctx.task_count) {
+            piccolo_ctx.current_task = 0;
         }
+    }
+}
 
-        p.sleep_ms(10);
+var task_wrappers: [PICCOLO_OS_TASK_LIMIT]task_wrapper_t = undefined;
+
+fn task_wrapper_func() void {
+    _ = c.printf("Task wrapper executing for task %zu\n", piccolo_ctx.current_task);
+    const wrapper = &task_wrappers[piccolo_ctx.current_task];
+    wrapper.function(wrapper.parameter);
+
+    while (true) {
+        piccolo_yield();
+    }
+}
+
+fn piccolo_create_task(task_func: task_function_t, parameter: ?*anyopaque) i32 {
+    if (piccolo_ctx.task_count >= PICCOLO_OS_TASK_LIMIT)
+        return -1;
+
+    const tc = piccolo_ctx.task_count;
+
+    task_wrappers[tc].function = task_func;
+    task_wrappers[tc].parameter = parameter;
+
+    piccolo_ctx.the_tasks[tc] =
+        piccolo_os_create_task(@as([*]u32, @ptrCast(&piccolo_ctx.task_stacks[tc][0])), &task_wrapper_func);
+    piccolo_ctx.task_count += 1;
+
+    return @as(i32, @intCast(piccolo_ctx.task_count - 1));
+}
+
+const blinky = extern struct {
+    delay: u32,
+    message: [*:0]const u8,
+};
+
+const LED_PIN: u32 = 25;
+const LED2_PIN: u32 = 14;
+
+fn task1_func(param: ?*anyopaque) void {
+    c.gpio_init(LED_PIN);
+    c.gpio_set_dir(LED_PIN, true);
+
+    var delay: u32 = 1000;
+    var message: [*:0]const u8 = "nothing passed";
+
+    if (param != null) {
+        const blink_param = @as(*const blinky, @ptrCast(@alignCast(param)));
+        delay = blink_param.delay;
+        message = blink_param.message;
     }
 
-    return 0;
+    _ = c.printf("Message: %s\n", message);
+
+    while (true) {
+        _ = c.printf("ON");
+        c.gpio_put(LED_PIN, true);
+        c.sleep_ms(delay);
+        _ = c.printf("OFF");
+        c.gpio_put(LED_PIN, false);
+        c.sleep_ms(delay);
+    }
+}
+
+fn is_prime(n: u32) i32 {
+    if ((n & 1) == 0 or n < 2) {
+        return if (n == 2) 1 else 0;
+    }
+
+    var p: u32 = 3;
+    while (p <= n / p) : (p += 2) {
+        if (n % p == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+fn task2_func(param: ?*anyopaque) void {
+    var p: i32 = undefined;
+    const prefix: [*:0]const u8 = if (param != null)
+        @as([*:0]const u8, @ptrCast(param))
+    else
+        "Number";
+
+    while (true) {
+        const time_value = c.to_ms_since_boot(c.get_absolute_time());
+        const masked_time = time_value & 0x7FFFFFFF;
+        const safe_masked_time: u32 = masked_time & 0x7FFFFFFF;
+        p = @as(i32, @bitCast(safe_masked_time));
+        if (p >= 0 and is_prime(@as(u32, @intCast(p))) == 1) {
+            _ = c.printf("%s: %d is prime!\n", prefix, p);
+        }
+    }
+}
+
+fn task3_cmpfunc(a: ?*const anyopaque, b: ?*const anyopaque) callconv(.c) c_int {
+    const a_val = @as(*const i32, @ptrCast(@alignCast(a))).*;
+    const b_val = @as(*const i32, @ptrCast(@alignCast(b))).*;
+    return a_val - b_val;
+}
+
+fn task3_func(param: ?*anyopaque) void {
+    c.gpio_init(LED2_PIN);
+    c.gpio_set_dir(LED2_PIN, true);
+
+    const message = if (param != null)
+        @as([*:0]const u8, @ptrCast(param))
+    else
+        "No message provided";
+
+    while (true) {
+        c.gpio_put(LED2_PIN, true);
+        _ = c.printf("Task 3 message: %s\n", message);
+
+        var x: i32 = 0;
+        while (x < 20) : (x += 1) {
+            const values = @as([*c]i32, @ptrCast(@alignCast(c.malloc(1024 * @sizeOf(i32)))));
+            var j: i32 = 1024;
+            var i: usize = 0;
+            while (i < 1024) : (i += 1) {
+                values[i] = j;
+                j -= 1;
+            }
+            _ = c.qsort(values, 1024, @sizeOf(i32), task3_cmpfunc);
+            c.free(values);
+        }
+        c.gpio_put(LED2_PIN, false);
+        c.sleep_ms(1000);
+    }
+}
+
+export fn main() i32 {
+    piccolo_init();
+
+    _ = c.printf("PICCOLO OS Demo Starting...\n");
+
+    const prime_prefix = "Prime number";
+    const task3_message = "PLEASE";
+    var blink = blinky{
+        .delay = 1000,
+        .message = "on of yee",
+    };
+
+    _ = piccolo_create_task(task1_func, &blink);
+    _ = piccolo_create_task(task2_func, @ptrCast(@constCast(prime_prefix)));
+    _ = piccolo_create_task(task3_func, @ptrCast(@constCast(task3_message)));
+    piccolo_start();
+
+    return 0; // Never gonna happen
 }

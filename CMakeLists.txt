@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.27)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Initialize the Pico SDK
 include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(mlem)

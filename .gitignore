@@ -7,3 +7,6 @@ env.sh
 .zig-cache/
 zig-out
 build/
+
+.cache/
+compile_commands.json

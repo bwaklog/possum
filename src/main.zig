@@ -13,16 +13,38 @@ pub const p = @cImport({
     @cInclude("hardware/sync.h");
 });
 
+// pub const cticks = @cImport({
+//     @cInclude("priority.h");
+// });
+
 // const generic_func  = *fn(*anyopaque) ?*anyopaque;
 const generic_func  = *const fn(ctx: *anyopaque) void;
 const TIME_SLICE: u32 = 2_000; // ms value
 
+const PPB_BASE: u32 = 0xe0000000;
+const SHPR2_OFFSET: u32 = 0x0000ed1c;
+const SHPR2_BITS: u32 = 0xc0000000;
+const SHPR3_OFFSET: u32 = 0x0000ed20;
+const SHPR3_BITS: u32 = 0xc0c00000;
+const M0PLUS_ICSR_OFFSET: u32 = 0x0000ed04;
+const M0PLUS_ICSR_BITS: u32 = 0x9edff1ff;
+
+const SYST_CSR: *u32 = @ptrFromInt(0xE000E010);
+const SYST_RVR: *u32 = @ptrFromInt(0xE000E014);
+const SYST_CVR: *u32 = @ptrFromInt(0xE000E018);
+const SYST_Calib: *u32 = @ptrFromInt(0xE000E01C);
+
+const REG_ALIAS_SET_BITS = 0x2 << 12;
+
 // assembly method definitions
 extern fn foo(a: u32, b: u32) u32; // DEBUG
-// extern fn isr_svcall() void;
+extern fn isr_svcall(void) void;
+extern fn isr_systick(void) void;
 extern fn task_init_stack(n: *u32) void;
 extern fn pre_switch(n: *u32) void;
-extern fn yield() void;
+
+// extern fn yield(void) void;
+// extern fn syscall(void) void;
 
 // const Task = struct {
 //     callback: generic_func,
@@ -256,18 +278,27 @@ fn sched_callback(alarm_num: c_uint) callconv(.c) void {
     // return true;
 }
 
+fn set_interrupt_priority() void {
+
+}
+
 fn systick_config(n: c_ulong) void {
-    (p.systick_hw.*).csr = 0;
-    p.__dsb();
-    p.__isb();
+    SYST_CSR.* = 0;
+    asm volatile (
+        \\ dsb
+    );
+    asm volatile (
+        \\ isb
+    );
 
-    var icsr_base = (p.PPB_BASE + p.M0PLUS_ICSR_OFFSET);
-    var icsr_base_cast: [*c]volatile p.io_rw_32 = @volatileCast(@as([*c]p.io_rw_32, &icsr_base));
-    p.hw_set_bits((&icsr_base_cast).*, p.M0PLUS_ICSR_BITS);
+    p.hw_set_bits(
+        @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_ICSR_OFFSET)), 
+        p.M0PLUS_ICSR_PENDSTCLR_BITS
+    );
 
-    (p.systick_hw.*).rvr = n - 1;
-    (p.systick_hw.*).cvr = 0;
-    (p.systick_hw.*).csr = 0x03;
+    SYST_RVR.* = n - 1;
+    SYST_CVR.* = 0;
+    SYST_CSR.* = 0b101;
 }
 
 // custom function
@@ -278,6 +309,8 @@ fn foo_task(ctx: *anyopaque) void {
 
     while (true) {
         _ = p.printf("[FOO TASK]: hello %d!\r\n", i);
+        const cur_systick_val = p.systick_hw.*.cvr;
+        _ = p.printf("[DEBUG][FOO TASK] testing systick %u\r\n", cur_systick_val);
 
         // var psp_val: u32 = undefined;
         // asm volatile (
@@ -361,7 +394,6 @@ fn baz_task(ctx: *anyopaque) void {
 
 
 export fn main() c_int {
-    @setRuntimeSafety(false);
     _ = p.stdio_init_all();
 
     p.gpio_init(25);
@@ -377,53 +409,61 @@ export fn main() c_int {
 
     _ = p.printf("finished boot wait\n");
 
+    p.hw_set_bits(
+        @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_SHPR2_OFFSET)), 
+        p.M0PLUS_SHPR2_BITS
+    );
+
+    p.hw_set_bits(
+        @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_SHPR3_OFFSET)), 
+        p.M0PLUS_SHPR3_BITS
+    );
+
     sched.create_task(foo_task);
     sched.create_task(bar_task);
     sched.create_task(baz_task);
 
-    // var timer: p.repeating_timer_t = undefined;
-    // const timer_c: [*c]p.repeating_timer_t = @ptrCast(&timer);
-    // _ = p.add_repeating_timer_ms(2000, repeating_timer_callback, null, timer_c);
-
-    p.hardware_alarm_set_callback(0, sched_callback);
-    const timeout = p.make_timeout_time_ms(TIME_SLICE);
-    _ = p.hardware_alarm_set_target(0, timeout);
-    _ = p.printf("[DEBUG] initialised hardware alarm for 2000ms\n");
-
-
-    // this should not make the timer fire
-    // just does not work :/
-    // p.irq_set_enabled(0, false);
-    // p.irq_set_enabled(1, false);
-    // p.irq_set_enabled(2, false);
-    // p.irq_set_enabled(3, false);
+    _ = p.printf("initialised tasks\r\n");
 
     var dummy_stack = [_]c_uint{0} ** 32;
     task_init_stack(&dummy_stack[0]);
 
-    _ = p.printf("[DEBUG] starting pre_switch\r\n");
-    // the addr in r0 given to pre switch is 
-    // &sched.tasks[n] basically
-    pre_switch(sched.tasks[0]);
+    sched.current_task = 0;
 
-
-    // var i: c_uint = 0;
-
+    var current_task: usize = 0;
     while (true) {
-        // _ = p.printf("[MAIN TASK]: hello %d!\r\n", i);
 
-        // var psp_val: u32 = undefined;
-        // asm volatile (
-        //     \\ mrs %[value], psp
-        //     : [value] "=r"  (psp_val)
+        _ = p.printf("start of loop\r\n");
+
+        systick_config(100000);
+        // SYST_CSR.* = 0;
+        //
+        // p.hw_set_bits(
+        //     @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_ICSR_OFFSET)), 
+        //     p.M0PLUS_ICSR_PENDSTCLR_BITS
         // );
-        // _ = p.printf("[FOO TASK] psp address: %p\r\n", @as(*u32,@ptrFromInt(psp_val)));
+        //
+        // SYST_RVR.* = 10000 - 1;
+        // SYST_CVR.* = 10000 - 1;
+        // SYST_CSR.* = 0b01;
 
-        // i += 1;
-        // p.gpio_put(25, true);
-        // p.sleep_ms(200);
-        // p.gpio_put(25, false);
-        // p.sleep_ms(200);
+        _ = p.printf("switching to task %d\r\n", current_task);
+
+        pre_switch(sched.tasks[current_task]);
+
+        _ = p.printf("[DEBUG] Switch back to MSP, outside of task\r\n");
+        // current_task = @mod(current_task + 1, sched.task_count);
+        current_task = 0;
+        _ = p.printf("[DEBUG] current_task now at %d\r\n", current_task);
+
+        // _ = p.printf("[DEBUG] asjdhkjsa\r\n");
+        // _ = p.printf("[DEBUG] testing systick %u\r\n", cur_systick_val);
+        // p.sleep_ms(250);
+        // systick_config(3000);
+        // _ = p.printf("systick config set\r\n");
+        // pre_switch(sched.tasks[0]);
+        //
+        // sched.current_task = (sched.current_task + 1) % sched.task_count;
     }
 
     return 0;

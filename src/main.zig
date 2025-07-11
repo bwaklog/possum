@@ -2,13 +2,7 @@ pub const p = @cImport({
     @cInclude("pico.h");
     @cInclude("stdio.h");
     @cInclude("pico/stdlib.h");
-    // PICO W specific header
-    @cInclude("hardware/timer.h");
-    @cInclude("hardware/watchdog.h");
-    @cInclude("hardware/irq.h");
-    @cInclude("setjmp.h");
     @cInclude("pico/time.h");
-
     @cInclude("hardware/structs/systick.h");
     @cInclude("hardware/sync.h");
 });
@@ -38,13 +32,8 @@ const REG_ALIAS_SET_BITS = 0x2 << 12;
 
 // assembly method definitions
 extern fn foo(a: u32, b: u32) u32; // DEBUG
-extern fn isr_svcall(void) void;
-extern fn isr_systick(void) void;
 extern fn task_init_stack(n: *u32) void;
-extern fn pre_switch(n: *u32) void;
-
-// extern fn yield(void) void;
-// extern fn syscall(void) void;
+extern fn pre_switch(n: *u32) *u32;
 
 // const Task = struct {
 //     callback: generic_func,
@@ -131,8 +120,6 @@ const Sched = struct {
         // 256 - 17 -> how much we are pushing to the stack
         const offset: usize = PSTACK_SIZE - 17;
 
-        // _ = p.printf("task func is at %p\r\n", @as(u32, @intFromPtr(task)));
-
         const n = self.task_count;
 
         // return to thread mode with PSP
@@ -159,37 +146,16 @@ const Sched = struct {
         // _ = p.printf("exception return addr for task %p\r\n", excep_ret.*);
     }
 
-    pub fn re_create_task(self: *Self, task: generic_func, pos: usize) void {
-        // we mimick the stack frame
-        // 256 - 17 -> how much we are pushing to the stack
-        const offset: usize = PSTACK_SIZE - 17;
-
-
-        // return to thread mode with PSP
-        self.stacks[pos][offset + 8] = 0xFFFFFFFD;
-        self.stacks[pos][offset + 15] = @as(u32, @intFromPtr(task));
-
-        // PSR thumb bit
-        // SPSEL bit [1] of CONTROL reg defines the stack to
-        // be used
-        //      - 0 = MSP
-        //      - 1 = PSP
-        // "In Handler mode this bit reads as zero and ignores 
-        // writes."
-        self.stacks[pos][offset + 16] = 0x01000000;
-        
-        self.tasks[pos] = &self.stacks[pos][offset];
-
-        self.task_count += 1;
-    }
-
-
-    pub fn next(self: *Self) *u32 {
+    pub fn next(self: *Self) void {
         self.current_task = (self.current_task + 1) % self.task_count;
-        return self.tasks[self.current_task];
-        // return self.tasks[0];
+        // return self.tasks[self.current_task];
     }
 };
+
+fn busy_wait(us: u32) void {
+    const end = p.time_us_32() + us;
+    while (p.time_us_32() < end) {}
+}
 
 fn check_control() void {
     var result: u32 = undefined;
@@ -207,81 +173,6 @@ fn check_control() void {
 
 var sched = Sched.new();
 
-fn sched_callback(alarm_num: c_uint) callconv(.c) void {
-    _ = alarm_num;
-
-    var psp_val: u32 = undefined;
-    asm volatile (
-        \\ mrs %[value], psp
-        : [value] "=r"  (psp_val)
-    );
-    // _ = p.printf("old psp: %p\r\n", @as(*u32,@ptrFromInt(psp_val)));
-
-    asm volatile(
-        \\ mrs r0, psp
-        \\ 
-        \\ subs r0, #4
-        \\ str r1, [r0]
-        \\ subs r0, #16
-        \\ stmia r0!, {r4-r7}
-        \\
-        \\ mov r4, r8
-        \\ mov r5, r9
-        \\ mov r6, r10
-        \\ mov r7, r11
-        \\ subs r0, #32
-        \\ stmia r0!, {r4-r7}
-        \\ subs r0, #16
-        // \\
-        // \\ pop {r1, r2, r3, r4, r5}
-        // \\ mov r8, r1
-        // \\ mov r9, r2
-        // \\ mov r10, r3
-        // \\ mov r11, r4
-        // \\ mov r12, r5 /* r12 is ip */
-        // \\ pop {r4, r5, r6, r7}       
-        // \\                             
-        // \\ msr xpsr_nzcvq, ip
-    );
-
-    _ = p.printf("switched state in callback\r\n");
-
-    // _ = p.printf("[DEBUG] sched_callback running %d\r\n", alarm_num);
-    // _ = p.printf("[DEBUG] does not hit this line\r\n", alarm_num);
-    // const time  = p.time_us_64();
-    // _ = p.printf("[DEBUG][TIMER %d] walker callback at %lld\r\n", alarm_num, time);
-    // sched.re_create_task(foo_task, 0);
-
-    const task_ptr = sched.next();
-
-    const timeout = p.make_timeout_time_ms(TIME_SLICE);
-    _ = p.hardware_alarm_set_target(0, timeout);
-    
-    pre_switch(task_ptr);
-
-    _ = p.printf("called pre_switch\r\n");
-
-    // asm volatile (
-    //     \\ mrs %[value], psp
-    //     : [value] "=r"  (psp_val)
-    // );
-    // _ = p.printf("new psp: %p\r\n", @as(*u32,@ptrFromInt(psp_val)));
-
- //    asm volatile(
- //        \\ ldmia r0!,{r1}
- //        \\ mov lr, r1
-	// \\ msr psp, r0
- //    );
-    
-    // return true;
-    // _ = p.printf("[DEBUG] timer couldnt find user data");
-    // return true;
-}
-
-fn set_interrupt_priority() void {
-
-}
-
 fn systick_config(n: c_ulong) void {
     SYST_CSR.* = 0;
     asm volatile (
@@ -292,13 +183,13 @@ fn systick_config(n: c_ulong) void {
     );
 
     p.hw_set_bits(
-        @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_ICSR_OFFSET)), 
+        @as([*c]p.io_rw_32, @ptrFromInt(p.PPB_BASE + p.M0PLUS_ICSR_OFFSET)), 
         p.M0PLUS_ICSR_PENDSTCLR_BITS
     );
 
     SYST_RVR.* = n - 1;
     SYST_CVR.* = 0;
-    SYST_CSR.* = 0b101;
+    SYST_CSR.* = 0b011;
 }
 
 // custom function
@@ -309,8 +200,10 @@ fn foo_task(ctx: *anyopaque) void {
 
     while (true) {
         _ = p.printf("[FOO TASK]: hello %d!\r\n", i);
-        const cur_systick_val = p.systick_hw.*.cvr;
-        _ = p.printf("[DEBUG][FOO TASK] testing systick %u\r\n", cur_systick_val);
+        p.sleep_ms(200);
+        // busy_wait(100_000);
+        // const cur_systick_val = p.systick_hw.*.cvr;
+        // _ = p.printf("[DEBUG][FOO TASK] testing systick %u\r\n", cur_systick_val);
 
         // var psp_val: u32 = undefined;
         // asm volatile (
@@ -320,10 +213,10 @@ fn foo_task(ctx: *anyopaque) void {
         // _ = p.printf("[FOO TASK] psp address: %p\r\n", @as(*u32,@ptrFromInt(psp_val)));
 
         i += 1;
-        p.gpio_put(25, true);
-        p.sleep_ms(200);
-        p.gpio_put(25, false);
-        p.sleep_ms(200);
+        // p.gpio_put(25, true);
+        // busy_wait(250_000);
+        // p.gpio_put(25, false);
+        // busy_wait(250_000);
     }
 }
 
@@ -342,7 +235,8 @@ fn bar_task(ctx: *anyopaque) void {
         // _ = p.printf("[BAR TASK] psp address: %p\r\n", @as(*u32,@ptrFromInt(psp_val)));
 
         j += 1;
-        p.sleep_ms(500);
+        p.sleep_ms(200);
+        // busy_wait(500_000);
     }
 }
 
@@ -410,12 +304,12 @@ export fn main() c_int {
     _ = p.printf("finished boot wait\n");
 
     p.hw_set_bits(
-        @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_SHPR2_OFFSET)), 
+        @as([*c]p.io_rw_32, @ptrFromInt(p.PPB_BASE + p.M0PLUS_SHPR2_OFFSET)),
         p.M0PLUS_SHPR2_BITS
     );
 
     p.hw_set_bits(
-        @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_SHPR3_OFFSET)), 
+        @as([*c]p.io_rw_32, @ptrFromInt(p.PPB_BASE + p.M0PLUS_SHPR3_OFFSET)),
         p.M0PLUS_SHPR3_BITS
     );
 
@@ -430,40 +324,16 @@ export fn main() c_int {
 
     sched.current_task = 0;
 
-    var current_task: usize = 0;
     while (true) {
 
         _ = p.printf("start of loop\r\n");
 
-        systick_config(100000);
-        // SYST_CSR.* = 0;
-        //
-        // p.hw_set_bits(
-        //     @ptrFromInt(@as(u32, p.PPB_BASE + p.M0PLUS_ICSR_OFFSET)), 
-        //     p.M0PLUS_ICSR_PENDSTCLR_BITS
-        // );
-        //
-        // SYST_RVR.* = 10000 - 1;
-        // SYST_CVR.* = 10000 - 1;
-        // SYST_CSR.* = 0b01;
+        systick_config(125000);
 
-        _ = p.printf("switching to task %d\r\n", current_task);
-
-        pre_switch(sched.tasks[current_task]);
+        sched.tasks[sched.current_task] = pre_switch(sched.tasks[sched.current_task]);
+        sched.next();
 
         _ = p.printf("[DEBUG] Switch back to MSP, outside of task\r\n");
-        // current_task = @mod(current_task + 1, sched.task_count);
-        current_task = 0;
-        _ = p.printf("[DEBUG] current_task now at %d\r\n", current_task);
-
-        // _ = p.printf("[DEBUG] asjdhkjsa\r\n");
-        // _ = p.printf("[DEBUG] testing systick %u\r\n", cur_systick_val);
-        // p.sleep_ms(250);
-        // systick_config(3000);
-        // _ = p.printf("systick config set\r\n");
-        // pre_switch(sched.tasks[0]);
-        //
-        // sched.current_task = (sched.current_task + 1) % sched.task_count;
     }
 
     return 0;

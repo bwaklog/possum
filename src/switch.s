@@ -1,6 +1,9 @@
 .thumb
 .syntax unified
 
+# .global SysTick_Handler
+# SysTick_Handler = isr_systick
+
 .type isr_svcall, %function
 .global isr_svcall
 .type isr_systick, %function
@@ -53,7 +56,7 @@ isr_systick:
     mov r12, r5 /* r12 is ip */
     pop {r4, r5, r6, r7}       
 
-    msr psr_nzcvq, ip
+    msr xpsr_nzcvq, ip
 
     pop {pc}
 
@@ -75,7 +78,7 @@ pre_switch:
     +------+
     */
 
-    mrs ip, psr
+    mrs ip, xpsr
     push {r4, r5, r6, r7, lr}
     mov r1, r8
     mov r2, r9
@@ -130,7 +133,7 @@ task_init_stack:
 	+------+
 	*/
 
-    mrs ip, psr
+    mrs ip, xpsr
     push {r4, r5, r6, r7, lr}
     mov r1, r8
     mov r2, r9

@@ -7,26 +7,10 @@ pub const p = @cImport({
     @cInclude("hardware/sync.h");
 });
 
-// pub const cticks = @cImport({
-//     @cInclude("priority.h");
-// });
+pub const addr = @import("addr/hw_addr.zig");
 
-// const generic_func  = *fn(*anyopaque) ?*anyopaque;
 const generic_func  = *const fn(ctx: *anyopaque) void;
 const TIME_SLICE: u32 = 2_000; // ms value
-
-const PPB_BASE: u32 = 0xe0000000;
-const SHPR2_OFFSET: u32 = 0x0000ed1c;
-const SHPR2_BITS: u32 = 0xc0000000;
-const SHPR3_OFFSET: u32 = 0x0000ed20;
-const SHPR3_BITS: u32 = 0xc0c00000;
-const M0PLUS_ICSR_OFFSET: u32 = 0x0000ed04;
-const M0PLUS_ICSR_BITS: u32 = 0x9edff1ff;
-
-const SYST_CSR: *u32 = @ptrFromInt(0xE000E010);
-const SYST_RVR: *u32 = @ptrFromInt(0xE000E014);
-const SYST_CVR: *u32 = @ptrFromInt(0xE000E018);
-const SYST_Calib: *u32 = @ptrFromInt(0xE000E01C);
 
 const REG_ALIAS_SET_BITS = 0x2 << 12;
 
@@ -35,17 +19,28 @@ extern fn foo(a: u32, b: u32) u32; // DEBUG
 extern fn task_init_stack(n: *u32) void;
 extern fn pre_switch(n: *u32) *u32;
 
-// const Task = struct {
-//     callback: generic_func,
-//     data: ?*anyopaque,
-//
-//     fn new(task_func: generic_func, data: *anyopaque) Task {
-//         return Task {
-//             .callback = task_func,
-//             .data = data,
-//         };
-//     }
-// };
+const Task = struct {
+    callback: generic_func,
+    data: ?*anyopaque,
+    stack_start: *u32,
+
+    const Self = @This();
+
+    fn new(
+        task_func: generic_func, 
+        data: ?*anyopaque, 
+        stack_start: *u32
+    ) Task {
+        return Task {
+            .callback = task_func,
+            .data = data,
+            .stack_start = stack_start,
+        };
+    }
+
+    // fn get_stack(self: *Self) *u32 {
+    // }
+};
 
 const TOTAL_TASKS: usize = 10;
 const PSTACK_SIZE: usize = 256;
@@ -97,7 +92,8 @@ const PSTACK_SIZE: usize = 256;
 
 const Sched = struct {
     stacks: [TOTAL_TASKS][PSTACK_SIZE]u32,
-    tasks: [TOTAL_TASKS]*u32,
+    // tasks: [TOTAL_TASKS]*u32,
+    tasks: [TOTAL_TASKS]Task,
 
     task_count: usize,
     current_task: usize,
@@ -115,7 +111,7 @@ const Sched = struct {
         return ret;
     }
 
-    pub fn create_task(self: *Self, task: generic_func) void {
+    pub fn create_task(self: *Self, task_func: generic_func, data: ?*anyopaque) void {
         // we mimick the stack frame
         // 256 - 17 -> how much we are pushing to the stack
         const offset: usize = PSTACK_SIZE - 17;
@@ -124,7 +120,7 @@ const Sched = struct {
 
         // return to thread mode with PSP
         self.stacks[n][offset + 8] = 0xFFFFFFFD;
-        self.stacks[n][offset + 15] = @as(u32, @intFromPtr(task));
+        self.stacks[n][offset + 15] = @as(u32, @intFromPtr(task_func));
 
         // PSR thumb bit
         // SPSEL bit [1] of CONTROL reg defines the stack to
@@ -135,7 +131,9 @@ const Sched = struct {
         // writes."
         self.stacks[n][offset + 16] = 0x01000000;
         
-        self.tasks[n] = &self.stacks[n][offset];
+        const task = Task.new(task_func, data, &self.stacks[n][offset]);
+        self.tasks[n] = task;
+        // self.tasks[n] = &self.stacks[n][offset];
 
         self.task_count += 1;
 
@@ -174,7 +172,7 @@ fn check_control() void {
 var sched = Sched.new();
 
 fn systick_config(n: c_ulong) void {
-    SYST_CSR.* = 0;
+    addr.SYST_CSR.* = 0;
     asm volatile (
         \\ dsb
     );
@@ -187,9 +185,9 @@ fn systick_config(n: c_ulong) void {
         p.M0PLUS_ICSR_PENDSTCLR_BITS
     );
 
-    SYST_RVR.* = n - 1;
-    SYST_CVR.* = 0;
-    SYST_CSR.* = 0b011;
+    addr.SYST_RVR.* = n - 1;
+    addr.SYST_CVR.* = 0;
+    addr.SYST_CSR.* = 0b011;
 }
 
 // custom function
@@ -201,22 +199,8 @@ fn foo_task(ctx: *anyopaque) void {
     while (true) {
         _ = p.printf("[FOO TASK]: hello %d!\r\n", i);
         p.sleep_ms(200);
-        // busy_wait(100_000);
-        // const cur_systick_val = p.systick_hw.*.cvr;
-        // _ = p.printf("[DEBUG][FOO TASK] testing systick %u\r\n", cur_systick_val);
-
-        // var psp_val: u32 = undefined;
-        // asm volatile (
-        //     \\ mrs %[value], psp
-        //     : [value] "=r"  (psp_val)
-        // );
-        // _ = p.printf("[FOO TASK] psp address: %p\r\n", @as(*u32,@ptrFromInt(psp_val)));
 
         i += 1;
-        // p.gpio_put(25, true);
-        // busy_wait(250_000);
-        // p.gpio_put(25, false);
-        // busy_wait(250_000);
     }
 }
 
@@ -238,40 +222,6 @@ fn bar_task(ctx: *anyopaque) void {
         p.sleep_ms(200);
         // busy_wait(500_000);
     }
-}
-
-fn repeating_timer_callback(timer: [*c]p.repeating_timer_t) callconv(.c) bool {
-
-    _ = p.printf("[DEBUG] inside sched_callback\r\n");
-
-    // var psp_val: u32 = undefined;
-    // asm volatile (
-    //     \\ mrs %[value], psp
-    //     : [value] "=r"  (psp_val)
-    // );
-    // _ = p.printf("[DEBUG][callback] psp address: %p\r\n", @as(*u32,@ptrFromInt(psp_val)));
-
-    
-    // _ = p.printf("[DEBUG] sched_callback running %d\r\n", timer.*.alarm_id);
-    // _ = p.printf("[DEBUG] does not hit this line\r\n");
-    const time  = p.time_us_64();
-    _ = p.printf("[DEBUG][TIMER %d] walker callback at %lld\r\n", timer.*.alarm_id, time);
-    _ = p.printf("[DEBUG] does not hit this line??\r\n");
-
-    // sched.re_create_task(foo_task, 0);
-
-    // const task_ptr = sched.next();
-
-    // const timeout = p.make_timeout_time_ms(5000);
-    // _ = p.hardware_alarm_set_target(0, timeout);
-    
-    // pre_switch(task_ptr);
-    
-    // return true;
-    // _ = p.printf("[DEBUG] timer couldnt find user data");
-    // return true;
-
-    return true;
 }
 
 fn baz_task(ctx: *anyopaque) void {
@@ -313,9 +263,9 @@ export fn main() c_int {
         p.M0PLUS_SHPR3_BITS
     );
 
-    sched.create_task(foo_task);
-    sched.create_task(bar_task);
-    sched.create_task(baz_task);
+    sched.create_task(foo_task, null);
+    sched.create_task(bar_task, null);
+    sched.create_task(baz_task, null);
 
     _ = p.printf("initialised tasks\r\n");
 
@@ -330,7 +280,7 @@ export fn main() c_int {
 
         systick_config(125000);
 
-        sched.tasks[sched.current_task] = pre_switch(sched.tasks[sched.current_task]);
+        sched.tasks[sched.current_task].stack_start = pre_switch(sched.tasks[sched.current_task].stack_start);
         sched.next();
 
         _ = p.printf("[DEBUG] Switch back to MSP, outside of task\r\n");

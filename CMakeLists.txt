@@ -25,6 +25,7 @@ target_link_libraries(mlem
     hardware_spi
     hardware_gpio
     hardware_watchdog
+    pico_multicore
     pico_rand
     ${CMAKE_SOURCE_DIR}/zig-out/mlem.o
 )

@@ -20,19 +20,29 @@ fn unlock_sched() void {
     sched_lock.store(false, .release);
 }
 
-// --- UART helpers ---
 fn uart_read_u32() u32 {
     var buf: [4]u8 = undefined;
     var i: usize = 0;
     while (i < buf.len) : (i += 1) {
-        buf[i] = p.uart_getc(null);
+        var c: i32 = 0;
+        while (true) {
+            c = p.stdio_getchar_timeout_us(100_000);
+            if (c != -1) break;
+        }
+        buf[i] = @intCast(c);
+        _ = p.printf("[UART DEBUG] Read byte %d: 0x%02x\r\n", i, buf[i]);
     }
     return @as(u32, buf[0]) | (@as(u32, buf[1]) << 8) | (@as(u32, buf[2]) << 16) | (@as(u32, buf[3]) << 24);
 }
 fn uart_read_exact(buf: []u8) void {
     var i: usize = 0;
     while (i < buf.len) : (i += 1) {
-        buf[i] = p.uart_getc(null);
+        var c: i32 = 0;
+        while (true) {
+            c = p.stdio_getchar_timeout_us(100_000);
+            if (c != -1) break;
+        }
+        buf[i] = @intCast(c);
     }
 }
 fn wait_for_keyword() void {
@@ -50,14 +60,22 @@ fn interface_core1() callconv(.C) void {
     while (true) {
         wait_for_keyword();
 
+        while (true) {
+            const c = p.stdio_getchar_timeout_us(100_000);
+            if (c != '\n' and c != '\r' and c != -1) {
+                break;
+            }
+        }
         _ = p.printf("AFTER KEYWORD");
         _ = p.printf("[CORE1] LOADPROG received\r\n");
 
-        // Only one program per LOADPROG
         const num_segments = uart_read_u32();
+        _ = p.printf("[CORE1] num_segments = %d\r\n", num_segments);
         for (0..num_segments) |i| {
             const segment_addr = uart_read_u32();
             const size = uart_read_u32();
+            _ = p.printf("[CORE1] segment_addr = 0x%x\r\n", segment_addr);
+            _ = p.printf("[CORE1] size = %d\r\n", size);
             if (size > 4096) {
                 _ = p.printf("[CORE1] segment too large\r\n");
                 return;
@@ -66,7 +84,6 @@ fn interface_core1() callconv(.C) void {
             uart_read_exact(seg_buf[0..size]);
             std.mem.copyForwards(u8, @as([*]u8, @ptrFromInt(segment_addr))[0..size], seg_buf[0..size]);
 
-            // Print segment info and first 8 bytes (or less)
             _ = p.printf("\r\n=== [CORE1] SEGMENT RECEIVED ===\r\n");
             _ = p.printf("[CORE1] Segment %d: addr=0x%x, size=%d, data=", i, segment_addr, size);
             const print_len = if (size < 8) size else 8;
@@ -77,11 +94,17 @@ fn interface_core1() callconv(.C) void {
         }
         const entry = uart_read_u32();
         _ = p.printf("[CORE1] Adding new task at 0x%x\r\n", entry);
-
+        _ = p.printf("before lock\r\n");
         lock_sched();
-        const entry_fn: *const fn (*anyopaque) void = @ptrFromInt(entry);
-        sched.create_task(entry_fn, null, 0);
+        _ = p.printf("after lock\r\n");
+        // const entry_fn: *const fn (*anyopaque) void = @ptrFromInt(entry);
+        _ = p.printf("WELL ENTRY:");
+        // _ = p.printf(@intFromPtr(entry_fn));
+        _ = p.printf("before create task\r\n");
+        sched.create_task(new_task, null, 0);
+        _ = p.printf("after task create\r\n");
         unlock_sched();
+        _ = p.printf("unlcoked\r\n");
     }
 }
 
@@ -114,6 +137,14 @@ fn baz_task(ctx: *anyopaque) void {
     }
 }
 
+fn new_task(ctx: *anyopaque) void {
+    _ = ctx;
+    for (0..1000000000) |i| {
+        _ = p.printf("WOWWW NEW FN numbner:\r\n");
+        _ = p.printf(i);
+        p.sleep_ms(50);
+    }
+}
 export fn main() c_int {
     init.init();
     _ = p.printf("BEFORE LAUNCH");

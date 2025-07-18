@@ -8,6 +8,8 @@ const timer = @import("timer/timer.zig");
 
 const init = @import("init.zig");
 
+// ptr = @ptrFromInt(@intFromPtr(ptr)+0x21);
+
 var sched = shceduler.Scheduler.new();
 var sched_lock: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
@@ -54,60 +56,107 @@ fn wait_for_keyword() void {
     }
 }
 
+fn receive_program_over_uart_data() ?[]u8 {
+    _ = p.printf("[CORE1] Waiting for LOADPROG keyword\r\n");
+    var keyword_buf: [8]u8 = undefined;
+    while (true) {
+        _ = p.scanf("%8s", &keyword_buf);
+        if (std.mem.eql(u8, &keyword_buf, "LOADPROG")) break;
+    }
+    _ = p.printf("[CORE1] LOADPROG received!\r\n");
+
+    var size_buf: [8]u8 = undefined;
+    uart_read_exact(size_buf[0..8]);
+    const prog_size: usize = @intCast(std.mem.bytesToValue(u64, size_buf[0..8]));
+    _ = p.printf("[CORE1] Program size: %d bytes\r\n", prog_size);
+
+    if (prog_size == 0 or prog_size > 65536) {
+        _ = p.printf("[CORE1] Invalid program size!\r\n");
+        return null;
+    }
+
+    var prog_bytes: [65536]u8 = undefined;
+
+    uart_read_exact(prog_bytes[0..prog_size]);
+    _ = p.printf("[CORE1] Program received!\r\n");
+
+    return prog_bytes[0..prog_size];
+}
 fn interface_core1() callconv(.C) void {
     _ = p.stdio_init_all();
     _ = p.printf("HELLOFROMINTERFACE");
-    while (true) {
-        wait_for_keyword();
+    // const ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(0x20000021));
 
-        while (true) {
-            const c = p.stdio_getchar_timeout_us(100_000);
-            if (c != '\n' and c != '\r' and c != -1) {
-                break;
-            }
-        }
-        _ = p.printf("AFTER KEYWORD");
-        _ = p.printf("[CORE1] LOADPROG received\r\n");
+    // while (true) {
+    //     wait_for_keyword();
 
-        const num_segments = uart_read_u32();
-        _ = p.printf("[CORE1] num_segments = %d\r\n", num_segments);
-        for (0..num_segments) |i| {
-            const segment_addr = uart_read_u32();
-            const size = uart_read_u32();
-            _ = p.printf("[CORE1] segment_addr = 0x%x\r\n", segment_addr);
-            _ = p.printf("[CORE1] size = %d\r\n", size);
-            if (size > 4096) {
-                _ = p.printf("[CORE1] segment too large\r\n");
-                return;
-            }
-            var seg_buf: [4096]u8 = undefined;
-            uart_read_exact(seg_buf[0..size]);
-            std.mem.copyForwards(u8, @as([*]u8, @ptrFromInt(segment_addr))[0..size], seg_buf[0..size]);
+    //     while (true) {
+    //         const c = p.stdio_getchar_timeout_us(100_000);
+    //         if (c != '\n' and c != '\r' and c != -1) {
+    //             break;
+    //         }
+    //     }
+    //     _ = p.printf("AFTER KEYWORD");
+    //     _ = p.printf("[CORE1] LOADPROG received\r\n");
 
-            _ = p.printf("\r\n=== [CORE1] SEGMENT RECEIVED ===\r\n");
-            _ = p.printf("[CORE1] Segment %d: addr=0x%x, size=%d, data=", i, segment_addr, size);
-            const print_len = if (size < 8) size else 8;
-            for (seg_buf[0..print_len]) |b| {
-                _ = p.printf("%02x ", b);
-            }
-            _ = p.printf("===\r\n");
-        }
-        const entry = uart_read_u32();
-        _ = p.printf("[CORE1] Adding new task at 0x%x\r\n", entry);
-        _ = p.printf("before lock\r\n");
+    //     const num_segments = uart_read_u32();
+    //     _ = p.printf("[CORE1] num_segments = %d\r\n", num_segments);
+    //     for (0..num_segments) |i| {
+    //         const segment_addr = uart_read_u32();
+    //         const size = uart_read_u32();
+    //         _ = p.printf("[CORE1] segment_addr = 0x%x\r\n", segment_addr);
+    //         _ = p.printf("[CORE1] size = %d\r\n", size);
+    //         if (size > 4096) {
+    //             _ = p.printf("[CORE1] segment too large\r\n");
+    //             return;
+    //         }
+    //         var seg_buf: [4096]u8 = undefined;
+    //         uart_read_exact(seg_buf[0..size]);
+    //         std.mem.copyForwards(u8, @as([*]u8, @ptrFromInt(segment_addr))[0..size], seg_buf[0..size]);
+
+    //         _ = p.printf("\r\n=== [CORE1] SEGMENT RECEIVED ===\r\n");
+    //         _ = p.printf("[CORE1] Segment %d: addr=0x%x, size=%d, data=", i, segment_addr, size);
+    //         const print_len = if (size < 8) size else 8;
+    //         for (seg_buf[0..print_len]) |b| {
+    //             _ = p.printf("%02x ", b);
+    //         }
+    //         _ = p.printf("===\r\n");
+    //     }
+    // const entry = uart_read_u32();
+    // _ = p.printf("[CORE1] Adding new task at 0x%x\r\n", entry);
+    // _ = p.printf("before lock\r\n");
+    // lock_sched();
+    // _ = p.printf("after lock\r\n");
+    // // const entry_fn: *const fn (*anyopaque) void = @ptrFromInt(entry);
+    // _ = p.printf("WELL ENTRY:");
+    // // _ = p.printf(@intFromPtr(entry_fn));
+    // _ = p.printf("before create task\r\n");
+    // sched.create_task(new_task, null, 0);
+    // _ = p.printf("after task create\r\n");
+    // unlock_sched();
+    // _ = p.printf("unlcoked\r\n");
+    // ...inside interface_core1...
+    // var prog_ptr = receive_program_over_uart();
+    // if (prog_ptr != null) {
+    //     _ = p.printf("[CORE1] Program loaded at ptr: 0x%x\r\n", @intFromPtr(prog_ptr));
+    // }
+    _ = p.printf("BEFORE EMBED TASK\r\n");
+    // const ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(@embedFile("test.elf")) + 0x0000018e));
+    const prog_data = receive_program_over_uart_data();
+    if (prog_data) |data| {
+        const prog_ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(&data[0]) + 0x0000018e));
+        _ = p.printf("[CORE1] Program loaded at ptr: 0x%x\r\n", @intFromPtr(prog_ptr));
         lock_sched();
-        _ = p.printf("after lock\r\n");
-        // const entry_fn: *const fn (*anyopaque) void = @ptrFromInt(entry);
-        _ = p.printf("WELL ENTRY:");
-        // _ = p.printf(@intFromPtr(entry_fn));
-        _ = p.printf("before create task\r\n");
-        sched.create_task(new_task, null, 0);
-        _ = p.printf("after task create\r\n");
+        sched.create_task(prog_ptr, null, 0);
         unlock_sched();
-        _ = p.printf("unlcoked\r\n");
+    } else {
+        _ = p.printf("[CORE1] Failed to load program over UART\r\n");
     }
-}
 
+    // lock_sched();
+    // sched.create_task(prog_ptr, null, 0);
+    // unlock_sched();
+}
 fn foo_task(ctx: *anyopaque) void {
     var i: u32 = 0;
     _ = ctx;
@@ -153,8 +202,8 @@ export fn main() c_int {
     _ = p.printf("AFTER LAUNCH");
     lock_sched();
     sched.create_task(foo_task, null, 0);
-    sched.create_task(bar_task, null, 0);
-    sched.create_task(baz_task, null, 0);
+    // sched.create_task(bar_task, null, 0);
+    // sched.create_task(baz_task, null, 0);
     unlock_sched();
     p.sleep_ms(500);
     _ = p.printf("initialised tasks\r\n");

@@ -47,6 +47,19 @@ const task = @import("../task/task.zig");
 /// 0xFFFFFFFD into the pc
 ///
 
+pub const CoreID = enum {
+    Core0,
+    Core1,
+};
+
+pub const Config = struct {
+    /// this specifies how many quantum units will
+    /// make the scheduler switch context
+    switch_quantums: c_ulong,
+
+    core: CoreID,
+};
+
 pub const Scheduler = struct {
     stacks: [common.TOTAL_TASKS][common.PSTACK_SIZE]u32,
     // tasks: [TOTAL_TASKS]*u32,
@@ -54,15 +67,27 @@ pub const Scheduler = struct {
 
     task_count: usize,
     current_task: usize,
+    config: Config,
+
+    quantums_left: u32,
 
     const Self = @This();
 
-    pub fn new() Self {
+    pub fn new(config: Config) Self {
+
+        // comptime {
+        //     if (config.switch_quantums <= 0) {
+        //         @compileError("Cant have a switch quantum <= 0. Minimum of a single quantum");
+        //     }
+        // }
+
         const ret = Scheduler {
             .stacks = .{.{0} ** common.PSTACK_SIZE} ** common.TOTAL_TASKS,
             .tasks = undefined,
             .task_count = 0,
             .current_task = 0,
+            .config = config,
+            .quantums_left = config.switch_quantums,
         };
 
         return ret;
@@ -107,7 +132,24 @@ pub const Scheduler = struct {
     }
 
     pub fn next(self: *Self) void {
-        self.current_task = (self.current_task + 1) % self.task_count;
-        // return self.tasks[self.current_task];
+        if (self.quantums_left == 0) {
+            self.current_task = (self.current_task + 1) % self.task_count;
+            self.quantums_left = self.config.switch_quantums;
+
+            switch (self.config.core) {
+                CoreID.Core1 => _ = p.printf("[CORE 1] quantums over, switching to task %d\r\n", self.current_task),
+                CoreID.Core0 => _ = p.printf("[CORE 0] quantums over, switching to task %d\r\n", self.current_task)
+            }
+
+        
+        } else {
+            self.quantums_left -= 1;
+            switch (self.config.core) {
+                CoreID.Core1 => _ = p.printf("[CORE 1] quantums remaining %d\r\n", self.quantums_left),
+                CoreID.Core0 => _ = p.printf("[CORE 0] quantums remaining %d\r\n", self.quantums_left)
+            }
+            return;
+        }
+        return;
     }
 };

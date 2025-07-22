@@ -56,7 +56,12 @@ fn wait_for_keyword() void {
     }
 }
 
-fn receive_program_over_uart_data() ?[]u8 {
+const ProgramData = struct {
+    data: []u8,
+    entry_offset: usize,
+};
+
+fn receive_program_over_uart_data() ?ProgramData {
     _ = p.printf("[CORE1] Waiting for LOADPROG keyword\r\n");
     var keyword_buf: [8]u8 = undefined;
     while (true) {
@@ -75,12 +80,20 @@ fn receive_program_over_uart_data() ?[]u8 {
         return null;
     }
 
+    var entry_buf: [8]u8 = undefined;
+    uart_read_exact(entry_buf[0..8]);
+    const entry_offset: usize = @intCast(std.mem.bytesToValue(u64, entry_buf[0..8]));
+    _ = p.printf("[CORE1] Entry offset: 0x%x\r\n", entry_offset);
+
     var prog_bytes: [65536]u8 = undefined;
 
     uart_read_exact(prog_bytes[0..prog_size]);
     _ = p.printf("[CORE1] Program received!\r\n");
 
-    return prog_bytes[0..prog_size];
+    return ProgramData{
+        .data = prog_bytes[0..prog_size],
+        .entry_offset = entry_offset,
+    };
 }
 fn interface_core1() callconv(.C) void {
     _ = p.stdio_init_all();
@@ -142,17 +155,16 @@ fn interface_core1() callconv(.C) void {
     // }
     _ = p.printf("BEFORE EMBED TASK\r\n");
     // const ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(@embedFile("test.elf")) + 0x0000018e));
-    const prog_data = receive_program_over_uart_data();
-    if (prog_data) |data| {
-        const prog_ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(&data[0]) + 0x0000018e));
-        _ = p.printf("[CORE1] Program loaded at ptr: 0x%x\r\n", @intFromPtr(prog_ptr));
-        lock_sched();
-        sched.create_task(prog_ptr, null, 0);
-        unlock_sched();
-    } else {
-        _ = p.printf("[CORE1] Failed to load program over UART\r\n");
+    while (true) {
+        const prog_data_opt = receive_program_over_uart_data();
+        if (prog_data_opt) |prog_data| {
+            const prog_ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(&prog_data.data[0]) + prog_data.entry_offset));
+            sched.create_task(prog_ptr, null, 0);
+            // unlock_sched();
+        } else {
+            _ = p.printf("[CORE1] Failed to load program over UART\r\n");
+        }
     }
-
     // lock_sched();
     // sched.create_task(prog_ptr, null, 0);
     // unlock_sched();

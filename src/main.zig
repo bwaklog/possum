@@ -47,17 +47,9 @@ fn uart_read_exact(buf: []u8) void {
         buf[i] = @intCast(c);
     }
 }
-fn wait_for_keyword() void {
-    _ = p.printf("INSIDE WAIT KEYOWRD");
-    var buf: [9]u8 = undefined;
-    while (true) {
-        _ = p.scanf("%8s", &buf);
-        if (std.mem.eql(u8, buf[0..8], "LOADPROG")) break;
-    }
-}
 
 const ProgramData = struct {
-    data: []u8,
+    data: [*]u8,
     entry_offset: usize,
 };
 
@@ -85,82 +77,35 @@ fn receive_program_over_uart_data() ?ProgramData {
     const entry_offset: usize = @intCast(std.mem.bytesToValue(u64, entry_buf[0..8]));
     _ = p.printf("[CORE1] Entry offset: 0x%x\r\n", entry_offset);
 
-    var prog_bytes: [65536]u8 = undefined;
+    // var prog_bytes: [65536]u8 = undefined;
+    const prog_bytes_alloc = p.malloc(prog_size);
+    if (prog_bytes_alloc) |prog_bytes_heap| {
+        var prog_bytes: [*]u8 = @ptrCast(@alignCast(prog_bytes_heap));
+        uart_read_exact(prog_bytes[0..prog_size]);
+        _ = p.printf("[CORE1] Program received!\r\n");
 
-    uart_read_exact(prog_bytes[0..prog_size]);
-    _ = p.printf("[CORE1] Program received!\r\n");
+        return ProgramData{
+            .data = prog_bytes,
+            .entry_offset = entry_offset,
+        };
+    }
 
-    return ProgramData{
-        .data = prog_bytes[0..prog_size],
-        .entry_offset = entry_offset,
-    };
+    return null;
+
 }
 fn interface_core1() callconv(.C) void {
     _ = p.stdio_init_all();
     _ = p.printf("HELLOFROMINTERFACE");
-    // const ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(0x20000021));
 
-    // while (true) {
-    //     wait_for_keyword();
-
-    //     while (true) {
-    //         const c = p.stdio_getchar_timeout_us(100_000);
-    //         if (c != '\n' and c != '\r' and c != -1) {
-    //             break;
-    //         }
-    //     }
-    //     _ = p.printf("AFTER KEYWORD");
-    //     _ = p.printf("[CORE1] LOADPROG received\r\n");
-
-    //     const num_segments = uart_read_u32();
-    //     _ = p.printf("[CORE1] num_segments = %d\r\n", num_segments);
-    //     for (0..num_segments) |i| {
-    //         const segment_addr = uart_read_u32();
-    //         const size = uart_read_u32();
-    //         _ = p.printf("[CORE1] segment_addr = 0x%x\r\n", segment_addr);
-    //         _ = p.printf("[CORE1] size = %d\r\n", size);
-    //         if (size > 4096) {
-    //             _ = p.printf("[CORE1] segment too large\r\n");
-    //             return;
-    //         }
-    //         var seg_buf: [4096]u8 = undefined;
-    //         uart_read_exact(seg_buf[0..size]);
-    //         std.mem.copyForwards(u8, @as([*]u8, @ptrFromInt(segment_addr))[0..size], seg_buf[0..size]);
-
-    //         _ = p.printf("\r\n=== [CORE1] SEGMENT RECEIVED ===\r\n");
-    //         _ = p.printf("[CORE1] Segment %d: addr=0x%x, size=%d, data=", i, segment_addr, size);
-    //         const print_len = if (size < 8) size else 8;
-    //         for (seg_buf[0..print_len]) |b| {
-    //             _ = p.printf("%02x ", b);
-    //         }
-    //         _ = p.printf("===\r\n");
-    //     }
-    // const entry = uart_read_u32();
-    // _ = p.printf("[CORE1] Adding new task at 0x%x\r\n", entry);
-    // _ = p.printf("before lock\r\n");
-    // lock_sched();
-    // _ = p.printf("after lock\r\n");
-    // // const entry_fn: *const fn (*anyopaque) void = @ptrFromInt(entry);
-    // _ = p.printf("WELL ENTRY:");
-    // // _ = p.printf(@intFromPtr(entry_fn));
-    // _ = p.printf("before create task\r\n");
-    // sched.create_task(new_task, null, 0);
-    // _ = p.printf("after task create\r\n");
-    // unlock_sched();
-    // _ = p.printf("unlcoked\r\n");
-    // ...inside interface_core1...
-    // var prog_ptr = receive_program_over_uart();
-    // if (prog_ptr != null) {
-    //     _ = p.printf("[CORE1] Program loaded at ptr: 0x%x\r\n", @intFromPtr(prog_ptr));
-    // }
     _ = p.printf("BEFORE EMBED TASK\r\n");
     // const ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(@embedFile("test.elf")) + 0x0000018e));
     while (true) {
         const prog_data_opt = receive_program_over_uart_data();
         if (prog_data_opt) |prog_data| {
             const prog_ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(&prog_data.data[0]) + prog_data.entry_offset));
+            lock_sched();
             sched.create_task(prog_ptr, null, 0);
-            // unlock_sched();
+            unlock_sched();
         } else {
             _ = p.printf("[CORE1] Failed to load program over UART\r\n");
         }
@@ -208,15 +153,18 @@ fn new_task(ctx: *anyopaque) void {
 }
 export fn main() c_int {
     init.init();
+
     _ = p.printf("BEFORE LAUNCH");
     p.multicore_launch_core1(interface_core1);
     // p.sleep_ms(1000000);
     _ = p.printf("AFTER LAUNCH");
+
     lock_sched();
     sched.create_task(foo_task, null, 0);
     // sched.create_task(bar_task, null, 0);
     // sched.create_task(baz_task, null, 0);
     unlock_sched();
+
     p.sleep_ms(500);
     _ = p.printf("initialised tasks\r\n");
 
@@ -228,11 +176,16 @@ export fn main() c_int {
     while (true) {
         lock_sched();
         timer.systick_config(common.TIME_SLICE);
-        sched.tasks[sched.current_task].stack_start = common.pre_switch(sched.tasks[sched.current_task].stack_start);
+        const stack_start = sched.tasks[sched.current_task].stack_start;
+        unlock_sched();
+
+        const return_psp = common.pre_switch(stack_start);
+
+        lock_sched();
+        sched.tasks[sched.current_task].stack_start = return_psp;
         sched.next();
         unlock_sched();
 
-        // p.sleep_ms(500);
         _ = p.printf("[DEBUG] Switch back to MSP, outside of task\r\n");
     }
     return 0;

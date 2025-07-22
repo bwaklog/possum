@@ -1,6 +1,7 @@
 pub const p = @cImport({
     @cInclude("pico.h");
     @cInclude("stdio.h");
+    @cInclude("stdlib.h");
     @cInclude("pico/stdlib.h");
     @cInclude("pico/time.h");
     @cInclude("hardware/structs/systick.h");

@@ -5,115 +5,28 @@ const addr = @import("common/addrs.zig");
 const task = @import("task/task.zig");
 const shceduler = @import("scheduler/scheduler.zig");
 const timer = @import("timer/timer.zig");
+const uart = @import("uart/uart.zig");
 
 const init = @import("init.zig");
 
-// ptr = @ptrFromInt(@intFromPtr(ptr)+0x21);
-
 var sched = shceduler.Scheduler.new();
-var sched_lock: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
-fn lock_sched() void {
-    while (sched_lock.swap(true, .acq_rel)) {
-        // spin
-    }
-}
-fn unlock_sched() void {
-    sched_lock.store(false, .release);
-}
-
-fn uart_read_u32() u32 {
-    var buf: [4]u8 = undefined;
-    var i: usize = 0;
-    while (i < buf.len) : (i += 1) {
-        var c: i32 = 0;
-        while (true) {
-            c = p.stdio_getchar_timeout_us(100_000);
-            if (c != -1) break;
-        }
-        buf[i] = @intCast(c);
-        _ = p.printf("[UART DEBUG] Read byte %d: 0x%02x\r\n", i, buf[i]);
-    }
-    return @as(u32, buf[0]) | (@as(u32, buf[1]) << 8) | (@as(u32, buf[2]) << 16) | (@as(u32, buf[3]) << 24);
-}
-fn uart_read_exact(buf: []u8) void {
-    var i: usize = 0;
-    while (i < buf.len) : (i += 1) {
-        var c: i32 = 0;
-        while (true) {
-            c = p.stdio_getchar_timeout_us(100_000);
-            if (c != -1) break;
-        }
-        buf[i] = @intCast(c);
-    }
-}
-
-const ProgramData = struct {
-    data: [*]u8,
-    entry_offset: usize,
-};
-
-fn receive_program_over_uart_data() ?ProgramData {
-    _ = p.printf("[CORE1] Waiting for LOADPROG keyword\r\n");
-    var keyword_buf: [8]u8 = undefined;
-    while (true) {
-        _ = p.scanf("%8s", &keyword_buf);
-        if (std.mem.eql(u8, &keyword_buf, "LOADPROG")) break;
-    }
-    _ = p.printf("[CORE1] LOADPROG received!\r\n");
-
-    var size_buf: [8]u8 = undefined;
-    uart_read_exact(size_buf[0..8]);
-    const prog_size: usize = @intCast(std.mem.bytesToValue(u64, size_buf[0..8]));
-    _ = p.printf("[CORE1] Program size: %d bytes\r\n", prog_size);
-
-    if (prog_size == 0 or prog_size > 65536) {
-        _ = p.printf("[CORE1] Invalid program size!\r\n");
-        return null;
-    }
-
-    var entry_buf: [8]u8 = undefined;
-    uart_read_exact(entry_buf[0..8]);
-    const entry_offset: usize = @intCast(std.mem.bytesToValue(u64, entry_buf[0..8]));
-    _ = p.printf("[CORE1] Entry offset: 0x%x\r\n", entry_offset);
-
-    // var prog_bytes: [65536]u8 = undefined;
-    const prog_bytes_alloc = p.malloc(prog_size);
-    if (prog_bytes_alloc) |prog_bytes_heap| {
-        var prog_bytes: [*]u8 = @ptrCast(@alignCast(prog_bytes_heap));
-        uart_read_exact(prog_bytes[0..prog_size]);
-        _ = p.printf("[CORE1] Program received!\r\n");
-
-        return ProgramData{
-            .data = prog_bytes,
-            .entry_offset = entry_offset,
-        };
-    }
-
-    return null;
-
-}
 fn interface_core1() callconv(.C) void {
     _ = p.stdio_init_all();
-    _ = p.printf("HELLOFROMINTERFACE");
 
-    _ = p.printf("BEFORE EMBED TASK\r\n");
-    // const ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(@embedFile("test.elf")) + 0x0000018e));
     while (true) {
-        const prog_data_opt = receive_program_over_uart_data();
+        const prog_data_opt = task.receive_program_uart();
         if (prog_data_opt) |prog_data| {
             const prog_ptr: *const fn (*anyopaque) void = @as(*const fn (*anyopaque) void, @ptrFromInt(@intFromPtr(&prog_data.data[0]) + prog_data.entry_offset));
-            lock_sched();
+            sched.lock();
             sched.create_task(prog_ptr, null, 0);
-            unlock_sched();
+            sched.unlock();
         } else {
-            _ = p.printf("[CORE1] Failed to load program over UART\r\n");
+            _ = p.printf("[CORE 1] Failed to load program over UART\r\n");
         }
     }
-    // lock_sched();
-    // sched.create_task(prog_ptr, null, 0);
-    // unlock_sched();
 }
+
 fn foo_task(ctx: *anyopaque) void {
     var i: u32 = 0;
     _ = ctx;
@@ -123,6 +36,7 @@ fn foo_task(ctx: *anyopaque) void {
         i += 1;
     }
 }
+
 fn bar_task(ctx: *anyopaque) void {
     var j: u32 = 0;
     _ = ctx;
@@ -132,6 +46,7 @@ fn bar_task(ctx: *anyopaque) void {
         p.sleep_ms(200);
     }
 }
+
 fn baz_task(ctx: *anyopaque) void {
     _ = ctx;
     while (true) {
@@ -151,19 +66,19 @@ fn new_task(ctx: *anyopaque) void {
         p.sleep_ms(50);
     }
 }
+
 export fn main() c_int {
     init.init();
 
     _ = p.printf("BEFORE LAUNCH");
     p.multicore_launch_core1(interface_core1);
-    // p.sleep_ms(1000000);
     _ = p.printf("AFTER LAUNCH");
 
-    lock_sched();
+    sched.lock();
     sched.create_task(foo_task, null, 0);
     // sched.create_task(bar_task, null, 0);
     // sched.create_task(baz_task, null, 0);
-    unlock_sched();
+    sched.unlock();
 
     p.sleep_ms(500);
     _ = p.printf("initialised tasks\r\n");
@@ -174,17 +89,17 @@ export fn main() c_int {
     sched.current_task = 0;
 
     while (true) {
-        lock_sched();
+        sched.lock();
         timer.systick_config(common.TIME_SLICE);
         const stack_start = sched.tasks[sched.current_task].stack_start;
-        unlock_sched();
+        sched.unlock();
 
         const return_psp = common.pre_switch(stack_start);
 
-        lock_sched();
+        sched.lock();
         sched.tasks[sched.current_task].stack_start = return_psp;
         sched.next();
-        unlock_sched();
+        sched.unlock();
 
         _ = p.printf("[DEBUG] Switch back to MSP, outside of task\r\n");
     }

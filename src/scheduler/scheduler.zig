@@ -1,3 +1,4 @@
+const std = @import("std");
 const p = @import("../common/common.zig").p;
 const common = @import("../common/common.zig");
 const task = @import("../task/task.zig");
@@ -55,6 +56,8 @@ pub const Scheduler = struct {
     task_count: usize,
     current_task: usize,
 
+    scheduler_lock: std.atomic.Value(bool),
+
     const Self = @This();
 
     pub fn new() Self {
@@ -63,6 +66,7 @@ pub const Scheduler = struct {
             .tasks = undefined,
             .task_count = 0,
             .current_task = 0,
+            .scheduler_lock = std.atomic.Value(bool).init(false),
         };
 
         return ret;
@@ -109,5 +113,16 @@ pub const Scheduler = struct {
     pub fn next(self: *Self) void {
         self.current_task = (self.current_task + 1) % self.task_count;
         // return self.tasks[self.current_task];
+    }
+
+    // scheduler locking
+    pub fn lock(self: *Self) void {
+        while (self.scheduler_lock.swap(true, .acq_rel)) {
+            // spin
+        }
+    }
+
+    pub fn unlock(self: *Self) void {
+        self.scheduler_lock.store(false, .release);
     }
 };

@@ -5,11 +5,12 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-
 from rr_fp import Scheduler as RRScheduler, Thread as RRThread
 from mlfq import Scheduler as MLFQScheduler, Thread as MLFQThread
 
+
 # ----------- BenchmarkRunner Class --------------
+
 
 class BenchmarkRunner:
     def __init__(self, scheduler_name, scheduler_class, thread_class):
@@ -84,11 +85,13 @@ class BenchmarkRunner:
         return df
 
 
+
     def _run_rr(self, scheduler, threads):
         # Wrap rr_fp simulation with state / interval logging
         
         time_quantum = scheduler.time_quantum
         cpu_busy_start = None
+
 
         def record_state(thread, state):
             self.execution_timeline.append({
@@ -97,20 +100,25 @@ class BenchmarkRunner:
                 "state": state,
             })
 
+
         def thread_function(thread, time_quantum=1):
             nonlocal cpu_busy_start
             exec_time = min(time_quantum, thread.remaining_time)
             start_exec = time.time()
+
 
             # Record running start
             record_state(thread, "RUNNING")
             if cpu_busy_start is None:
                 cpu_busy_start = start_exec
 
+
             time.sleep(exec_time)  # Simulate execution
+
 
             end_exec = time.time()
             thread.remaining_time -= exec_time
+
 
             if thread.remaining_time <= 0:
                 thread.state = "FINISHED"
@@ -126,12 +134,15 @@ class BenchmarkRunner:
                 self.cpu_busy_intervals.append((cpu_busy_start, end_exec))
                 cpu_busy_start = None
 
+
         print(f"\nStarting RR Scheduler Simulation")
         start_time = time.time()
         switches = 0
 
+
         while not scheduler.all_finished():
             next_thread = scheduler.schedule_rr_with_priority()
+
 
             if next_thread is None:
                 # Idle CPU
@@ -140,20 +151,25 @@ class BenchmarkRunner:
                 time.sleep(0.01)
                 continue
 
+
             if next_thread.state == "READY":
                 next_thread.state = "RUNNING"
                 if next_thread.response_time is None:
                     next_thread.response_time = time.time() - next_thread.arrival_time
                     print(f"Thread {next_thread.thread_id} response time: {next_thread.response_time:.2f}")
 
+
             record_state(next_thread, "RUNNING")
+
 
             thread_function(next_thread, time_quantum)
             switches += 1
             self.context_switch_times.append(time.time())
 
+
         end_time = time.time()
         print(f"RR Scheduler finished in {end_time - start_time:.2f}s with {switches} context switches.")
+
 
     def _run_mlfq(self, scheduler, threads):
         # Wrap mlfq simulation with instrumentation
@@ -164,19 +180,24 @@ class BenchmarkRunner:
         quantum_used = 0
         cpu_busy_start = None
 
+
         while not scheduler.all_threads_finished():
             now = time.time()
+
 
             # Promotions according to original scheduler code
             if now - scheduler.last_promotion_time >= scheduler.global_promotion_interval:
                 scheduler.promote_all()
                 scheduler.last_promotion_time = now
 
+
             if now - scheduler.last_random_promotion_time >= scheduler.random_promotion_interval:
                 scheduler.randomized_promotion()
                 scheduler.last_random_promotion_time = now
 
+
             next_thread = scheduler.schedule()
+
 
             if next_thread is None:
                 # Idle CPU
@@ -186,6 +207,7 @@ class BenchmarkRunner:
                 quantum_used = 0
                 time.sleep(0.01)
                 continue
+
 
             # Preemption if higher priority thread
             if current_thread and current_thread.state == "RUNNING" and next_thread.priority > current_thread.priority:
@@ -205,6 +227,7 @@ class BenchmarkRunner:
                 if cpu_busy_start is None:
                     cpu_busy_start = time.time()
 
+
             tq = scheduler.time_quantums.get(current_thread.priority, None)
             if tq is None:
                 execution_time = current_thread.remaining_time
@@ -212,21 +235,26 @@ class BenchmarkRunner:
                 execution_time = tq - quantum_used
                 execution_time = min(execution_time, current_thread.remaining_time)
 
+
             self.execution_timeline.append({"thread_id": current_thread.thread_id,
                                             "timestamp": time.time(),
                                             "state": "RUNNING"})
 
+
             print(f"\nExecuting Thread {current_thread.thread_id} (Pri={current_thread.priority}) for {execution_time:.2f}s")
+
 
             time.sleep(execution_time)
             scheduler.current_time += execution_time
             current_thread.remaining_time -= execution_time
             quantum_used += execution_time
 
+
             if current_thread.start_time is None:
                 current_thread.start_time = scheduler.current_time - execution_time
             if current_thread.response_time is None:
                 current_thread.response_time = current_thread.start_time - current_thread.arrival_time
+
 
             if current_thread.remaining_time <= 0:
                 current_thread.state = "FINISHED"
@@ -252,6 +280,7 @@ class BenchmarkRunner:
                     if current_thread not in scheduler.priority_queues[new_p]:
                         scheduler.priority_queues[new_p].append(current_thread)
 
+
                     self.context_switch_times.append(time.time())
                     if cpu_busy_start is not None:
                         self.cpu_busy_intervals.append((cpu_busy_start, scheduler.current_time))
@@ -259,11 +288,14 @@ class BenchmarkRunner:
                     current_thread = None
                     quantum_used = 0
 
+
         print("MLFQ Scheduler finished simulation.")
+
 
 
 # ------ Visualization Functions ------
 
+#PERF
 def plot_avg_metrics_bar(df):
     avg = df.groupby('scheduler')[['turnaround_time', 'waiting_time', 'response_time']].mean()
     avg.plot(kind='bar', figsize=(8, 6), title="Average Thread Metrics per Scheduler")
@@ -272,6 +304,7 @@ def plot_avg_metrics_bar(df):
     plt.tight_layout()
     plt.show()
 
+#PERF
 def plot_metrics_boxplot(df):
     plt.figure(figsize=(14,5))
     metrics = ['turnaround_time', 'waiting_time', 'response_time']
@@ -283,114 +316,225 @@ def plot_metrics_boxplot(df):
     plt.tight_layout()
     plt.show()
 
-def plot_gantt_chart(execution_timeline, title="Execution Timeline Gantt Chart"):
-    if not execution_timeline:
-        print("No execution timeline available.")
-        return
+#idts this is working - nvm it is
+def plot_gantt_chart_seperated(rr_timeline, mlfq_timeline, rr_title="RR Scheduler Execution Timeline", mlfq_title = "MLFQ Scheduler Execution Timeline"):
+    def create_gantt_subplot(ax, execution_timeline, title):
+        if not execution_timeline:
+            ax.text(0.5, 0.5, "No execution timeline available", ha='center', va='center')
+            ax.axis('off')
+            return
 
-    # Sort timeline by timestamp
-    timeline = sorted(execution_timeline, key=lambda x: x['timestamp'])
 
-    gantt_dict = {}
-    for i in range(len(timeline)):
-        record = timeline[i]
-        tid = record["thread_id"]
-        ts = record["timestamp"]
-        state = record["state"]
+        # Sort timeline by timestamp
+        timeline = sorted(execution_timeline, key=lambda x: x['timestamp'])
 
-        if tid is None:
-            # Idle period, skip for per-thread bars
-            continue
-        if tid not in gantt_dict:
-            gantt_dict[tid] = []
+
+        gantt_dict = {}
+        for i in range(len(timeline)):
+            record = timeline[i]
+            tid = record["thread_id"]
+            ts = record["timestamp"]
+            state = record["state"]
+
+
+            if tid is None:
+                # Idle period, skip for per-thread bars
+                continue
+            if tid not in gantt_dict:
+                gantt_dict[tid] = []
+
 
         # Calculate duration until next timestamp
-        if i+1 < len(timeline):
-            end_ts = timeline[i+1]["timestamp"]
-        else:
-            end_ts = ts + 0.01  # minimal duration for last
+            if i+1 < len(timeline):
+                end_ts = timeline[i+1]["timestamp"]
+            else:
+                end_ts = ts + 0.01  # minimal duration for last
 
-        duration = end_ts - ts
-        if duration <= 0:
-            continue
 
-        gantt_dict[tid].append((ts, duration, state))
+            duration = end_ts - ts
+            if duration <= 0:
+                continue
 
-    plt.figure(figsize=(12, 6))
-    ybase = 10
-    yheight = 6
-    yticks = []
-    ylabels = []
-    colors = {
-        "RUNNING": "tab:green",
-        "PREEMPTED": "tab:orange",
-        "READY": "tab:blue",
-        "FINISHED": "tab:grey",
-        "IDLE": "tab:red",
-    }
 
-    idx = 0
-    for tid in sorted(gantt_dict.keys()):
-        for start, dur, state in gantt_dict[tid]:
-            plt.broken_barh([(start, dur)], (ybase + idx*(yheight+2), yheight),
-                            facecolors=colors.get(state, "tab:blue"), edgecolor='black')
-        yticks.append(ybase + idx*(yheight+2) + yheight/2)
-        ylabels.append(f"Thread {tid}")
-        idx += 1
+            gantt_dict[tid].append((ts, duration, state))
+        
 
-    plt.xlabel("Timestamp (seconds since epoch)")
-    plt.yticks(yticks, ylabels)
-    plt.title(title)
-    plt.grid(True)
+
+        #plt.figure(figsize=(12, 6))
+        ybase = 10
+        yheight = 6
+        yticks = []
+        ylabels = []
+        colors = {
+            "RUNNING": "tab:green",
+            "PREEMPTED": "tab:orange",
+            "READY": "tab:blue",
+            "FINISHED": "tab:grey",
+            "IDLE": "tab:red",
+        }
+
+
+        idx = 0
+        for tid in sorted(gantt_dict.keys()):
+            for start, dur, state in gantt_dict[tid]:
+                ax.broken_barh([(start, dur)], (ybase + idx*(yheight+2), yheight),
+                               facecolors=colors.get(state, "tab:blue"), edgecolor='black')
+            yticks.append(ybase + idx*(yheight+2) + yheight / 2)
+            ylabels.append(f"Thread {tid}")
+            idx += 1
+
+        ax.set_xlabel("Timestamp (seconds since epoch)")
+        ax.set_yticks(yticks)
+        ax.set_yticklabels(ylabels)
+        ax.set_title(title)
+        ax.grid(True)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+
+    create_gantt_subplot(ax1, rr_timeline, rr_title)
+    create_gantt_subplot(ax2, mlfq_timeline, mlfq_title)
+
     plt.tight_layout()
     plt.show()
 
-def plot_cpu_busy_idle(cpu_intervals, sim_start, sim_end):
-    busy_time = sum(end - start for start, end in cpu_intervals)
-    total = sim_end - sim_start
-    idle_time = total - busy_time
-    plt.bar(["CPU Busy", "CPU Idle"], [busy_time, idle_time], color=["tab:green", "tab:red"])
-    plt.ylabel("Time (seconds)")
-    plt.title("CPU Busy vs Idle Time")
+   
+
+#PERF
+def plot_cpu_busy_idle(rr_intervals, rr_start, rr_end, mlfq_intervals, mlfq_start, mlfq_end):
+    # busy_time = sum(end - start for start, end in cpu_intervals)
+    # total = sim_end - sim_start
+    # idle_time = total - busy_time
+    # plt.bar(["CPU Busy", "CPU Idle"], [busy_time, idle_time], color=["tab:green", "tab:red"])
+    # plt.ylabel("Time (seconds)")
+    # plt.title("CPU Busy vs Idle Time")
+    # plt.tight_layout()
+    # plt.show()
+    rr_busy = sum(end - start for start, end in rr_intervals)
+    rr_total = rr_end - rr_start
+    rr_idle = rr_total - rr_busy
+
+    mlfq_busy = sum(end - start for start, end in mlfq_intervals)
+    mlfq_total = mlfq_end - mlfq_start
+    mlfq_idle = mlfq_total - mlfq_busy
+
+    labels = ['CPU Busy', 'CPU Idle']
+    rr_values = [rr_busy, rr_idle]
+    mlfq_values = [mlfq_busy, mlfq_idle]
+
+    x = np.arange(len(labels))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(8,5))
+    rects1 = ax.bar(x - width/2, rr_values, width, label='RR Scheduler', color='tab:blue')
+    rects2 = ax.bar(x + width/2, mlfq_values, width, label='MLFQ Scheduler', color='tab:orange')
+
+    ax.set_ylabel('Time (seconds)')
+    ax.set_title('CPU Busy vs Idle Time Comparison')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+
     plt.tight_layout()
     plt.show()
 
-def plot_context_switch_hist(context_switch_times):
-    if len(context_switch_times) < 2:
+#PERF
+def plot_context_switch_hist(rr_context_switch_times, mlfq_context_switch_times):
+    if len(rr_context_switch_times) < 2:
         print("Not enough context switch events for histogram")
         return
-    intervals = np.diff(sorted(context_switch_times))
-    plt.hist(intervals, bins=20, color="tab:purple")
-    plt.xlabel("Interval between context switches (seconds)")
-    plt.ylabel("Frequency")
-    plt.title("Context Switch Intervals Histogram")
+    if len(mlfq_context_switch_times) < 2:
+        print("Not enough context switch events for histogram")
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(14,6))
+
+    # Plot RR context switch intervals histogram
+    if len(rr_context_switch_times) >= 2:
+        rr_intervals = np.diff(sorted(rr_context_switch_times))
+        axes[0].hist(rr_intervals, bins=20, color="tab:blue", alpha=0.7)
+        axes[0].set_title("RR Scheduler Context Switch Intervals")
+        axes[0].set_xlabel("Interval between context switches (seconds)")
+        axes[0].set_ylabel("Frequency")
+    else:
+        axes[0].text(0.5, 0.5, "Insufficient data", ha='center', va='center')
+        axes[0].set_title("RR Scheduler Context Switch Intervals")
+        axes[0].set_xticks([])
+        axes[0].set_yticks([])
+
+     # Plot MLFQ context switch intervals histogram
+    if len(mlfq_context_switch_times) >= 2:
+        mlfq_intervals = np.diff(sorted(mlfq_context_switch_times))
+        axes[1].hist(mlfq_intervals, bins=20, color="tab:orange", alpha=0.7)
+        axes[1].set_title("MLFQ Scheduler Context Switch Intervals")
+        axes[1].set_xlabel("Interval between context switches (seconds)")
+        axes[1].set_ylabel("Frequency")
+    else:
+        axes[1].text(0.5, 0.5, "Insufficient data", ha='center', va='center')
+        axes[1].set_title("MLFQ Scheduler Context Switch Intervals")
+        axes[1].set_xticks([])
+        axes[1].set_yticks([])
+
     plt.tight_layout()
     plt.show()
 
+
 # -------- Main function to run benchmarks and plot -----------
+
 
 def main():
     rr_runner = BenchmarkRunner("RR", RRScheduler, RRThread)
     mlfq_runner = BenchmarkRunner("MLFQ", MLFQScheduler, MLFQThread)
+
+    rr_context_switch_times = rr_runner.context_switch_times
+    mlfq_context_switch_times = mlfq_runner.context_switch_times
+
+
 
     print("Running RR Scheduler...")
     rr_metrics = rr_runner.run(num_threads=20)
     print("Running MLFQ Scheduler...")
     mlfq_metrics = mlfq_runner.run(num_threads=20)
 
+
+    # Print summary for RR
+    print("\n===== Round Robin Scheduler Summary =====")
+    rr_avg = rr_metrics[['turnaround_time', 'waiting_time', 'response_time']].mean()
+    rr_throughput = len(rr_metrics) / (rr_runner.sim_end - rr_runner.sim_start)
+    print(f"Average Turnaround Time : {rr_avg.turnaround_time:.4f} seconds")
+    print(f"Average Waiting Time    : {rr_avg.waiting_time:.4f} seconds")
+    print(f"Average Response Time   : {rr_avg.response_time:.4f} seconds")
+    print(f"Throughput             : {rr_throughput:.4f} threads/second")
+
+
+    # Print summary for MLFQ
+    print("\n===== MLFQ Scheduler Summary =====")
+    mlfq_avg = mlfq_metrics[['turnaround_time', 'waiting_time', 'response_time']].mean()
+    mlfq_throughput = len(mlfq_metrics) / (mlfq_runner.sim_end - mlfq_runner.sim_start)
+    print(f"Average Turnaround Time : {mlfq_avg.turnaround_time:.4f} seconds")
+    print(f"Average Waiting Time    : {mlfq_avg.waiting_time:.4f} seconds")
+    print(f"Average Response Time   : {mlfq_avg.response_time:.4f} seconds")
+    print(f"Throughput             : {mlfq_throughput:.4f} threads/second")
+
+
     combined_metrics = pd.concat([rr_metrics, mlfq_metrics], ignore_index=True)
     combined_timeline = rr_runner.execution_timeline + mlfq_runner.execution_timeline
     combined_cpu_intervals = rr_runner.cpu_busy_intervals + mlfq_runner.cpu_busy_intervals
     combined_context_switch_times = rr_runner.context_switch_times + mlfq_runner.context_switch_times
 
+
     plot_avg_metrics_bar(combined_metrics)
     plot_metrics_boxplot(combined_metrics)
-    plot_gantt_chart(combined_timeline, "Thread Execution Timeline (RR and MLFQ)")
+    #plot_gantt_chart(combined_timeline, "Thread Execution Timeline (RR and MLFQ)")
+    plot_gantt_chart_seperated(rr_runner.execution_timeline, mlfq_runner.execution_timeline)
+
 
     sim_start = min(rr_runner.sim_start, mlfq_runner.sim_start)
     sim_end = max(rr_runner.sim_end, mlfq_runner.sim_end)
-    plot_cpu_busy_idle(combined_cpu_intervals, sim_start, sim_end)
-    plot_context_switch_hist(combined_context_switch_times)
+    #plot_cpu_busy_idle(combined_cpu_intervals, sim_start, sim_end)
+    plot_cpu_busy_idle(rr_runner.cpu_busy_intervals, rr_runner.sim_start, rr_runner.sim_end,
+                       mlfq_runner.cpu_busy_intervals, mlfq_runner.sim_start, mlfq_runner.sim_end)
+
+    plot_context_switch_hist(rr_context_switch_times, mlfq_context_switch_times)
+
 
 
 if __name__ == "__main__":

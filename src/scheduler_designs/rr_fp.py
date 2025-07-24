@@ -1,15 +1,15 @@
 import time
 from collections import defaultdict, deque
-
+import random
 
 class Thread:
-    def __init__(self, thread_id, priority, burst_time):
+    def __init__(self, thread_id, priority, burst_time, arrival_time=None):
         self.thread_id = thread_id
         self.priority = priority
-        self.burst_time = burst_time  # total required execution time
+        self.burst_time = burst_time
         self.remaining_time = burst_time
         self.state = "READY"
-        self.arrival_time = time.time() #added arrival time
+        self.arrival_time = arrival_time if arrival_time is not None else time.time()
         self.start_time = None
         self.end_time = None
         self.waiting_time = 0
@@ -83,7 +83,7 @@ def thread_function(thread, time_quantum=1):
 
 
 def simulate(scheduler):
-    print("\n▶ Starting Round Robin with Priority Scheduling Simulation")
+    print("\n Starting Round Robin with Priority Scheduling Simulation")
     start_time = time.time()
 
     total_turnaround_time = 0
@@ -101,7 +101,7 @@ def simulate(scheduler):
             next_thread.state = "RUNNING"
             if next_thread.response_time is None:
                 next_thread.response_time = time.time() - next_thread.arrival_time
-                print(f"↘️ Thread {next_thread.thread_id} RESPONSE at {next_thread.response_time:.2f}s")
+                print(f"Thread {next_thread.thread_id} RESPONSE at {next_thread.response_time:.2f}s")
 
         thread_function(next_thread, scheduler.time_quantum)
 
@@ -115,7 +115,7 @@ def simulate(scheduler):
         total_waiting_time += thread.waiting_time
         total_response_time += thread.response_time
 
-    print("\n📊 Benchmark Summary")
+    print("\n Summary")
     print(f"Total Time Taken          : {total_time:.2f} sec")
     print(f"Total Context Switches    : {scheduler.switches}")
     print(f"Avg Turnaround Time       : {total_turnaround_time / num_threads:.2f} sec")
@@ -126,16 +126,25 @@ def simulate(scheduler):
 
 
 def main():
-    scheduler = Scheduler(time_quantum=1)  # You can change quantum here
+    scheduler = Scheduler(time_quantum=3)
 
-    # Add sample threads
-    num_threads = 5
-    priorities = [2, 1, 0, 2, 1]
-    burst_times = [2, 4, 1, 3, 5]  # Simulated workload in seconds
+    # Sample threads
+    num_threads = 20
+    priorities = [random.randint(0,3) for _ in range (num_threads)]
+    burst_times = [random.uniform(1, 10) for _ in range(num_threads)]
+    start_arrival = time.time()
+    #print(start_arrival) #DEBUG
+    arrival_times = [start_arrival + random.uniform(0,10) for _ in range(num_threads)]
 
     for i in range(num_threads):
-        thread = Thread(thread_id=i, priority=priorities[i], burst_time=burst_times[i])
-        print(f"Created Thread {i} - Priority: {priorities[i]}, Burst Time: {burst_times[i]} sec")
+        thread = Thread(
+            thread_id=i,
+            priority=priorities[i],
+            burst_time=burst_times[i],
+            arrival_time = arrival_times[i]
+            )
+        
+        print(f"Created Thread {i} - Priority: {priorities[i]}, Burst Time: {burst_times[i]:.2f} sec, Arrival Time: {arrival_times[i]:.2f}")
         scheduler.add_thread(thread)
 
     simulate(scheduler)

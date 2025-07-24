@@ -68,9 +68,9 @@ class Scheduler:
 
 def thread_function(thread, time_quantum=1):
     print(f"→ Executing Thread {thread.thread_id} for up to {time_quantum:.2f} sec")
-    # Simulate execution
+    
     execution_time = min(time_quantum, thread.remaining_time)
-    time.sleep(execution_time)  # Simulate actual processing
+    time.sleep(execution_time)  
 
     thread.remaining_time -= execution_time
     if thread.remaining_time <= 0:
@@ -82,7 +82,7 @@ def thread_function(thread, time_quantum=1):
         print(f"↪ Thread {thread.thread_id} preempted, remaining: {thread.remaining_time:.2f} sec")
 
 
-def simulate(scheduler):
+def run_simulation(scheduler):
     print("\n Starting Round Robin with Priority Scheduling Simulation")
     start_time = time.time()
 
@@ -94,7 +94,7 @@ def simulate(scheduler):
         next_thread = scheduler.schedule_rr_with_priority()
 
         if next_thread is None:
-            time.sleep(0.01)  # Idle wait
+            time.sleep(0.01)
             continue
 
         if next_thread.state == "READY":
@@ -147,7 +147,7 @@ def main():
         print(f"Created Thread {i} - Priority: {priorities[i]}, Burst Time: {burst_times[i]:.2f} sec, Arrival Time: {arrival_times[i]:.2f}")
         scheduler.add_thread(thread)
 
-    simulate(scheduler)
+    run_simulation(scheduler)
 
 
 if __name__ == "__main__":

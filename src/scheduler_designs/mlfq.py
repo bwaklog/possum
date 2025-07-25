@@ -3,13 +3,13 @@ import random
 from collections import defaultdict, deque
 
 #There seem to be 10k ways of implementing this, here's the one I'm trying rn
-#4 levels of priority [0,3]
+#3 levels of priority [0,2]
 #Round robin in each, FIFO in the last one
 #Pre-emption if a higher priority thread arrives
 #Unlike before, arrival time is also randomized now
 #Every n seconds, all threads get promoted to the highest priroity queue
-#Time quantums 0-3 = [1, 3, 6, unlimited]
-#We also need to simulate tasks that yield control so it moves to an upper piroity
+#Time quantums 0-3 = [150, 170, 200, unlimited]
+#We also need to simulate tasks that yield control so it moves to an upper priority
 #Doing randomized promotion of 30% tasks every 7 seconds to simulate that
 
 
@@ -35,15 +35,15 @@ class Thread:
 class Scheduler:
     def __init__(self):
         
-        self.priority_queues = {3: deque(), 2: deque(), 1: deque(), 0: deque()}
+        self.priority_queues = {2: deque(), 1: deque(), 0: deque()}
         self.threads = []
-        self.time_quantums = {3: 1, 2: 3, 1: 6, 0: None}  # None means FCFS, no preemption via quantum
-        self.current_time = time.time()
+        self.time_quantums = {2: 150, 1: 170, 0: None}  # None means FCFS, no preemption via quantum
+        self.current_time = time.time()*1000
         self.context_switches = 0
         self.last_promotion_time = self.current_time
         self.last_random_promotion_time = self.current_time
-        self.random_promotion_interval = 7
-        self.global_promotion_interval = 7
+        self.random_promotion_interval = 7000
+        self.global_promotion_interval = 7000
         self.random_promotion_fraction = 0.3
 
     def add_thread(self, thread):
@@ -65,25 +65,25 @@ class Scheduler:
         return [t for t in self.threads if t.arrival_time <= self.current_time and t.state != "FINISHED"]
 
     def promote_all(self):
-        print(f"\n--- Global promotion of all threads to priority 3 ---")
-        for p in [0,1,2]:
+        print(f"\n--- Global promotion of all threads to priority 2 ---")
+        for p in [0,1]:
             queue = self.priority_queues[p]
             while queue:
                 t = queue.popleft()
                 if t.state != "FINISHED" and t.arrival_time <= self.current_time:
-                    t.priority = 3
-                    self.priority_queues[3].append(t)
+                    t.priority = 2
+                    self.priority_queues[2].append(t)
         for t in self.get_ready_threads():
-            if t.priority != 3 and t.state != "FINISHED":
+            if t.priority != 2 and t.state != "FINISHED":
                 old_queue = self.priority_queues[t.priority]
                 if t in old_queue:
                     old_queue.remove(t)
-                t.priority = 3
-                self.priority_queues[3].append(t)
+                t.priority = 2
+                self.priority_queues[2].append(t)
 
     def randomized_promotion(self):
         promotable = []
-        for p in [0,1,2]:
+        for p in [0,1]:
             promotable.extend([t for t in self.priority_queues[p] if t.state != "FINISHED" and t.arrival_time <= self.current_time])
         if not promotable:
             return
@@ -93,8 +93,8 @@ class Scheduler:
         for t in promote_list:
             old_p = t.priority
             new_p = old_p + 1
-            if new_p > 3:
-                new_p = 3
+            if new_p > 2:
+                new_p = 2
             if new_p == old_p:
                 continue
             print(f"Promoting Thread {t.thread_id} from {old_p} -> {new_p}")
@@ -105,7 +105,7 @@ class Scheduler:
 
     def schedule(self):
         
-        self.current_time = time.time()
+        self.current_time = time.time()*1000
 
         for t in self.get_ready_threads():
             found_in_queue = False
@@ -118,7 +118,7 @@ class Scheduler:
 
         self.sort_queues_by_arrival()
 
-        for p in [3,2,1,0]:
+        for p in [2,1,0]:
             queue = self.priority_queues[p]
             q_len = len(queue)
             if q_len == 0:
@@ -141,14 +141,21 @@ class Scheduler:
 
     def run(self):
         print("\n--- Starting MLFQ Scheduling Simulation ---")
-        start_sim_time = time.time()
+        start_sim_time = time.time()*1000
 
         current_thread = None
         quantum_used = 0
+        previous_time = self.current_time
 
         while not self.all_threads_finished():
-            now = time.time()
+            now = time.time()*1000
+            elapsed = now-previous_time
+            previous_time=now
             self.current_time = now
+
+            for t in self.threads:
+                if t.state == "READY" and t.arrival_time <= self.current_time:
+                    t.waiting_time += elapsed
 
             if now - self.last_promotion_time >= self.global_promotion_interval:
                 self.promote_all()
@@ -205,7 +212,7 @@ class Scheduler:
                     execution_time = current_thread.remaining_time
 
             print(f"\nExecuting Thread {current_thread.thread_id} , Priority={current_thread.priority} , Remaining={current_thread.remaining_time:.2f}s , Quantum slice: {execution_time:.2f}s")
-            time.sleep(execution_time)
+            time.sleep(execution_time/1000)
             self.current_time += execution_time
 
             current_thread.remaining_time -= execution_time
@@ -256,7 +263,7 @@ class Scheduler:
                             pass
 
         
-        end_sim_time = time.time()
+        end_sim_time = time.time()*1000
         total_time = end_sim_time - start_sim_time
 
         total_turnaround = sum(t.end_time - t.arrival_time for t in self.threads)
@@ -264,13 +271,13 @@ class Scheduler:
         total_response = sum(t.response_time for t in self.threads if t.response_time is not None)
         n = len(self.threads)
 
-        print("\nSummary-")
+        print("\nSummary for mlfq-")
         print(f"Total time elapsed: {total_time:.2f} seconds")
         print(f"Total context switches: {self.context_switches}")
-        print(f"Average turnaround time: {total_turnaround/n:.2f} seconds")
-        print(f"Average waiting time: {total_waiting/n:.2f} seconds")
-        print(f"Average response time: {total_response/n:.2f} seconds")
-        print(f"Throughput: {n/total_time:.2f} threads/sec")
+        print(f"!!! Average turnaround time: {total_turnaround/n:.2f} ms")
+        print(f"!!! Average waiting time: {total_waiting/n:.2f} ms")
+        print(f"!!! Average response time: {total_response/n:.2f} ms")
+        print(f"!!! Throughput: {n/(total_time/1000):.2f} threads/sec")
         cpu_burst_sum = sum(t.burst_time for t in self.threads)
         print(f"CPU Utilization: {(cpu_burst_sum/total_time)*100:.2f}%")
 
@@ -280,13 +287,19 @@ class Scheduler:
 
 def main():
     
-    random.seed(42)
+    random.seed(69)
 
-    num_threads = 20
-    priorities = [random.randint(0,3) for _ in range(num_threads)]
-    burst_times = [random.uniform(1,10) for _ in range(num_threads)]
-    start_arrival_time = time.time()
-    arrival_times = [start_arrival_time + random.uniform(0,10) for _ in range(num_threads)]
+    num_threads = 80
+    priorities = [random.randint(0,2) for _ in range(num_threads)]
+    #burst_times = [random.uniform(1,10) for _ in range(num_threads)]
+    burst_times = (
+        [random.uniform(10, 100) for _ in range(1,21)] +
+        [random.uniform(120, 500) for _ in range(21, 41)] +
+        [random.uniform(600, 1200) for _ in range(41, 61)]+
+        [random.uniform(3000, 10000) for _ in range(61, 81)]
+    )
+    start_arrival_time = time.time()*1000
+    arrival_times = [start_arrival_time + random.uniform(0,2000) for _ in range(num_threads)]
 
     scheduler = Scheduler()
 

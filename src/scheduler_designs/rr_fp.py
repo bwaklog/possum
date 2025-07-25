@@ -9,7 +9,7 @@ class Thread:
         self.burst_time = burst_time
         self.remaining_time = burst_time
         self.state = "READY"
-        self.arrival_time = arrival_time if arrival_time is not None else time.time()
+        self.arrival_time = arrival_time if arrival_time is not None else time.time()*1000
         self.start_time = None
         self.end_time = None
         self.waiting_time = 0
@@ -20,11 +20,11 @@ class Thread:
 
 
 class Scheduler:
-    def __init__(self, time_quantum=1):
+    def __init__(self, time_quantum=150):
         self.priority_queues = defaultdict(deque)
         self.priority_levels = []
         self.switches = 0
-        self.last_scheduling_time = time.time()
+        self.last_scheduling_time = time.time()*1000
         self.threads = []
         self.time_quantum = time_quantum
 
@@ -36,16 +36,20 @@ class Scheduler:
             self.priority_levels.sort(reverse=True)
 
     def schedule_rr_with_priority(self):
-        current_time = time.time()
+        current_time = time.time()*1000
 
         for priority in self.priority_levels:
             queue = self.priority_queues[priority]
             queue_len = len(queue)
 
-            for _ in range(queue_len):  # Round Robin loop
+            for _ in range(queue_len):  
                 thread = queue.popleft()
 
                 if thread.state == "FINISHED":
+                    continue
+
+                if thread.arrival_time > current_time:
+                    queue.append(thread)
                     continue
 
                 # Update waiting time since last scheduled
@@ -66,16 +70,16 @@ class Scheduler:
         return all(thread.state == "FINISHED" for thread in self.threads)
 
 
-def thread_function(thread, time_quantum=1):
+def thread_function(thread, time_quantum=150):
     print(f"→ Executing Thread {thread.thread_id} for up to {time_quantum:.2f} sec")
     
     execution_time = min(time_quantum, thread.remaining_time)
-    time.sleep(execution_time)  
+    #time.sleep(execution_time/1000)  
 
     thread.remaining_time -= execution_time
     if thread.remaining_time <= 0:
         thread.state = "FINISHED"
-        thread.end_time = time.time()
+        thread.end_time = time.time()*1000
         print(f"✓ Thread {thread.thread_id} FINISHED execution")
     else:
         thread.state = "READY"
@@ -84,7 +88,7 @@ def thread_function(thread, time_quantum=1):
 
 def run_simulation(scheduler):
     print("\n Starting Round Robin with Priority Scheduling Simulation")
-    start_time = time.time()
+    start_time = time.time()*1000
 
     total_turnaround_time = 0
     total_waiting_time = 0
@@ -93,19 +97,19 @@ def run_simulation(scheduler):
     while not scheduler.all_finished():
         next_thread = scheduler.schedule_rr_with_priority()
 
-        if next_thread is None:
-            time.sleep(0.01)
-            continue
+        # if next_thread is None:
+        #     time.sleep(0.01)
+        #     continue
 
         if next_thread.state == "READY":
             next_thread.state = "RUNNING"
             if next_thread.response_time is None:
-                next_thread.response_time = time.time() - next_thread.arrival_time
+                next_thread.response_time = time.time()*1000 - next_thread.arrival_time
                 print(f"Thread {next_thread.thread_id} RESPONSE at {next_thread.response_time:.2f}s")
 
         thread_function(next_thread, scheduler.time_quantum)
 
-    end_time = time.time()
+    end_time = time.time()*1000
     total_time = end_time - start_time
 
     num_threads = len(scheduler.threads)
@@ -115,30 +119,37 @@ def run_simulation(scheduler):
         total_waiting_time += thread.waiting_time
         total_response_time += thread.response_time
 
-    print("\n Summary")
-    print(f"Total Time Taken          : {total_time:.2f} sec")
+    print("\n Summary for RR with fixed priority")
+    print(f"Total Time Taken          : {total_time:.2f} msec")
     print(f"Total Context Switches    : {scheduler.switches}")
-    print(f"Avg Turnaround Time       : {total_turnaround_time / num_threads:.2f} sec")
-    print(f"Avg Waiting Time          : {total_waiting_time / num_threads:.2f} sec")
-    print(f"Avg Response Time         : {total_response_time / num_threads:.2f} sec")
-    print(f"Throughput                : {num_threads / total_time:.2f} threads/sec")
+    print(f"!!! Avg Turnaround Time       : {total_turnaround_time / num_threads:.2f} msec")
+    print(f"!!! Avg Waiting Time          : {total_waiting_time / num_threads:.2f} msec")
+    print(f"!!! Avg Response Time         : {total_response_time / num_threads:.2f} msec")
+    print(f"!!! Throughput                : {num_threads / (total_time/1000):.2f} threads/sec")
     print(f"CPU Utilization           : {(sum(t.burst_time for t in scheduler.threads) / total_time) * 100:.2f}%\n")
 
 
 def main():
-    scheduler = Scheduler(time_quantum=3)
+    random.seed(69)
+    scheduler = Scheduler(time_quantum=150)
 
     # Sample threads
-    num_threads = 20
-    priorities = [random.randint(0,3) for _ in range (num_threads)]
-    burst_times = [random.uniform(1, 10) for _ in range(num_threads)]
-    start_arrival = time.time()
+    num_threads = 80
+    priorities = [random.randint(0,2) for _ in range (num_threads)]
+    burst_times = (
+        [random.uniform(10, 100) for _ in range(1,21)] +
+        [random.uniform(120, 500) for _ in range(21, 41)] +
+        [random.uniform(600, 1200) for _ in range(41, 61)]+
+        [random.uniform(3000, 10000) for _ in range(61, 81)]
+    )
+    
+    start_arrival = time.time()*1000
     #print(start_arrival) #DEBUG
-    arrival_times = [start_arrival + random.uniform(0,10) for _ in range(num_threads)]
+    arrival_times = [start_arrival + random.uniform(0,20000) for _ in range(num_threads)]
 
     for i in range(num_threads):
         thread = Thread(
-            thread_id=i,
+            thread_id=i+1,
             priority=priorities[i],
             burst_time=burst_times[i],
             arrival_time = arrival_times[i]

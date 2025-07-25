@@ -9,16 +9,13 @@ from rr_fp import Scheduler as RRScheduler, Thread as RRThread
 from mlfq import Scheduler as MLFQScheduler, Thread as MLFQThread
 
 
-# ----------- BenchmarkRunner Class --------------
-
-
 class BenchmarkRunner:
     def __init__(self, scheduler_name, scheduler_class, thread_class):
         self.scheduler_name = scheduler_name
         self.scheduler_class = scheduler_class
         self.thread_class = thread_class
         
-        # Data collected during run:
+       
         self.thread_metrics = []
         self.execution_timeline = []       # list of dicts: {thread_id, timestamp, state}
         self.cpu_busy_intervals = []       # list of (start_time, end_time)
@@ -30,7 +27,7 @@ class BenchmarkRunner:
     def run(self, num_threads=20):
         # Setup threads
         random.seed(42)
-        start_time = time.time()
+        start_time = time.time
         priorities = [random.randint(0, 3) for _ in range(num_threads)]
         burst_times = [random.uniform(1, 10) for _ in range(num_threads)]
         arrival_times = [start_time + random.uniform(0, 10) for _ in range(num_threads)]
@@ -49,12 +46,12 @@ class BenchmarkRunner:
             scheduler.add_thread(t)
         
         # Run simulation with instrumentation hooks
-        self.sim_start = time.time()
+        self.sim_start = time.time
         if self.scheduler_name == "RR":
             self._run_rr(scheduler, threads)
         else:
             self._run_mlfq(scheduler, threads)
-        self.sim_end = time.time()
+        self.sim_end = time.time
         
         # Gather thread metrics in DataFrame
         data = {
@@ -96,7 +93,7 @@ class BenchmarkRunner:
         def record_state(thread, state):
             self.execution_timeline.append({
                 "thread_id": thread.thread_id if thread else None,
-                "timestamp": time.time(),
+                "timestamp": time.time,
                 "state": state,
             })
 
@@ -104,7 +101,7 @@ class BenchmarkRunner:
         def thread_function(thread, time_quantum=1):
             nonlocal cpu_busy_start
             exec_time = min(time_quantum, thread.remaining_time)
-            start_exec = time.time()
+            start_exec = time.time
 
 
             # Record running start
@@ -116,7 +113,7 @@ class BenchmarkRunner:
             time.sleep(exec_time)  # Simulate execution
 
 
-            end_exec = time.time()
+            end_exec = time.time
             thread.remaining_time -= exec_time
 
 
@@ -136,7 +133,7 @@ class BenchmarkRunner:
 
 
         print(f"\nStarting RR Scheduler Simulation")
-        start_time = time.time()
+        start_time = time.time
         switches = 0
 
 
@@ -155,7 +152,7 @@ class BenchmarkRunner:
             if next_thread.state == "READY":
                 next_thread.state = "RUNNING"
                 if next_thread.response_time is None:
-                    next_thread.response_time = time.time() - next_thread.arrival_time
+                    next_thread.response_time = time.time - next_thread.arrival_time
                     print(f"Thread {next_thread.thread_id} response time: {next_thread.response_time:.2f}")
 
 
@@ -164,10 +161,10 @@ class BenchmarkRunner:
 
             thread_function(next_thread, time_quantum)
             switches += 1
-            self.context_switch_times.append(time.time())
+            self.context_switch_times.append(time.time)
 
 
-        end_time = time.time()
+        end_time = time.time
         print(f"RR Scheduler finished in {end_time - start_time:.2f}s with {switches} context switches.")
 
 
@@ -182,7 +179,7 @@ class BenchmarkRunner:
 
 
         while not scheduler.all_threads_finished():
-            now = time.time()
+            now = time.time
 
 
             # Promotions according to original scheduler code
@@ -201,7 +198,7 @@ class BenchmarkRunner:
 
             if next_thread is None:
                 # Idle CPU
-                self.execution_timeline.append({"thread_id": None, "timestamp": time.time(), "state": "IDLE"})
+                self.execution_timeline.append({"thread_id": None, "timestamp": time.time, "state": "IDLE"})
                 cpu_busy_start = None
                 current_thread = None
                 quantum_used = 0
@@ -212,20 +209,20 @@ class BenchmarkRunner:
             # Preemption if higher priority thread
             if current_thread and current_thread.state == "RUNNING" and next_thread.priority > current_thread.priority:
                 self.execution_timeline.append({"thread_id": current_thread.thread_id,
-                                                "timestamp": time.time(), "state": "PREEMPTED"})
+                                                "timestamp": time.time, "state": "PREEMPTED"})
                 current_thread.state = "READY"
                 if current_thread not in scheduler.priority_queues[current_thread.priority]:
                     scheduler.priority_queues[current_thread.priority].append(current_thread)
                 current_thread = next_thread
                 quantum_used = 0
-                self.context_switch_times.append(time.time())
+                self.context_switch_times.append(time.time)
                 cpu_busy_start = None
             elif current_thread is None or current_thread.state != "RUNNING":
                 current_thread = next_thread
                 quantum_used = 0
-                self.context_switch_times.append(time.time())
+                self.context_switch_times.append(time.time)
                 if cpu_busy_start is None:
-                    cpu_busy_start = time.time()
+                    cpu_busy_start = time.time
 
 
             tq = scheduler.time_quantums.get(current_thread.priority, None)
@@ -237,7 +234,7 @@ class BenchmarkRunner:
 
 
             self.execution_timeline.append({"thread_id": current_thread.thread_id,
-                                            "timestamp": time.time(),
+                                            "timestamp": time.time,
                                             "state": "RUNNING"})
 
 
@@ -268,7 +265,7 @@ class BenchmarkRunner:
                 current_thread = None
                 quantum_used = 0
                 scheduler.context_switches += 1
-                self.context_switch_times.append(time.time())
+                self.context_switch_times.append(time.time)
             else:
                 if tq is not None and quantum_used >= tq and current_thread.priority > 0:
                     old_p = current_thread.priority
@@ -281,7 +278,7 @@ class BenchmarkRunner:
                         scheduler.priority_queues[new_p].append(current_thread)
 
 
-                    self.context_switch_times.append(time.time())
+                    self.context_switch_times.append(time.time)
                     if cpu_busy_start is not None:
                         self.cpu_busy_intervals.append((cpu_busy_start, scheduler.current_time))
                     cpu_busy_start = None
